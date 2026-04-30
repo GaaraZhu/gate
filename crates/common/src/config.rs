@@ -107,3 +107,117 @@ fn config_path() -> Result<std::path::PathBuf> {
         std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME environment variable not set"))?;
     Ok(std::path::PathBuf::from(home).join(".config/redact/config.yaml"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::Mutex;
+    use tempfile::NamedTempFile;
+
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    fn load_from_yaml(yaml: &str) -> Result<Config> {
+        let _guard = LOCK.lock().unwrap();
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(yaml.as_bytes()).unwrap();
+        unsafe { std::env::set_var("REDACT_CONFIG", f.path()) };
+        let result = Config::load();
+        unsafe { std::env::remove_var("REDACT_CONFIG") };
+        result
+    }
+
+    fn load_missing() -> Result<Config> {
+        let _guard = LOCK.lock().unwrap();
+        unsafe { std::env::set_var("REDACT_CONFIG", "/tmp/redact_nonexistent_xyz_abc.yaml") };
+        let result = Config::load();
+        unsafe { std::env::remove_var("REDACT_CONFIG") };
+        result
+    }
+
+    #[test]
+    fn defaults_when_file_missing() {
+        let config = load_missing().unwrap();
+        assert_eq!(config.pii.column_name_boost, 0.15);
+        assert_eq!(config.pii.confidence_threshold, 0.8);
+        assert_eq!(config.pii.redaction, "[PII:{type}]");
+        assert!(config.pii.include_summary);
+        assert_eq!(config.pii.action, Action::Redact);
+        assert_eq!(config.pii.wildcard_policy, WildcardPolicy::Reject);
+        assert!(config.tools.is_empty());
+        assert!(config.pii.column_names.is_empty());
+        assert!(config.pii.patterns.is_empty());
+    }
+
+    #[test]
+    fn round_trip_parse() {
+        let yaml = r#"
+tools:
+  tkpsql:
+    sql_arg: "--sql"
+  mysql:
+    sql_arg: ~
+pii:
+  action: warn
+  wildcard_policy: warn
+  column_name_boost: 0.2
+  confidence_threshold: 0.9
+  redaction: "[REDACTED:{type}]"
+  include_summary: false
+  column_names:
+    - secret_token
+  patterns:
+    custom_id:
+      regex: "\\bID-\\d{6}\\b"
+      confidence: 0.9
+"#;
+        let config = load_from_yaml(yaml).unwrap();
+        assert_eq!(config.tools["tkpsql"].sql_arg, Some("--sql".to_string()));
+        assert!(config.tools["mysql"].sql_arg.is_none());
+        assert_eq!(config.pii.action, Action::Warn);
+        assert_eq!(config.pii.wildcard_policy, WildcardPolicy::Warn);
+        assert_eq!(config.pii.column_name_boost, 0.2);
+        assert_eq!(config.pii.confidence_threshold, 0.9);
+        assert_eq!(config.pii.redaction, "[REDACTED:{type}]");
+        assert!(!config.pii.include_summary);
+        assert_eq!(config.pii.column_names, vec!["secret_token"]);
+        let pat = &config.pii.patterns["custom_id"];
+        assert_eq!(pat.regex, r"\bID-\d{6}\b");
+        assert_eq!(pat.confidence, 0.9);
+    }
+
+    #[test]
+    fn partial_yaml_fills_defaults() {
+        // Only override one field; all others must stay at their defaults.
+        let config = load_from_yaml("pii:\n  action: warn\n").unwrap();
+        assert_eq!(config.pii.action, Action::Warn);
+        assert_eq!(config.pii.column_name_boost, 0.15);
+        assert_eq!(config.pii.confidence_threshold, 0.8);
+        assert_eq!(config.pii.redaction, "[PII:{type}]");
+        assert!(config.pii.include_summary);
+        assert_eq!(config.pii.wildcard_policy, WildcardPolicy::Reject);
+        assert!(config.tools.is_empty());
+    }
+
+    #[test]
+    fn empty_yaml_uses_all_defaults() {
+        let config = load_from_yaml("").unwrap();
+        assert_eq!(config.pii.column_name_boost, 0.15);
+        assert_eq!(config.pii.confidence_threshold, 0.8);
+        assert_eq!(config.pii.redaction, "[PII:{type}]");
+        assert!(config.pii.include_summary);
+    }
+
+    #[test]
+    fn malformed_yaml_returns_error() {
+        let result = load_from_yaml("pii: {bad: yaml: :: :");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to parse config"));
+    }
+
+    #[test]
+    fn unknown_action_variant_is_error() {
+        let result = load_from_yaml("pii:\n  action: explode\n");
+        assert!(result.is_err());
+    }
+}
