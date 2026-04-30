@@ -200,9 +200,9 @@ mod tests {
     fn ssn_rejects_negatives() {
         let p = pattern("ssn");
         for s in &[
-            "123456789",    // no dashes
-            "12-345-6789",  // wrong grouping
-            "1234-56-789",  // wrong grouping
+            "123456789",   // no dashes
+            "12-345-6789", // wrong grouping
+            "1234-56-789", // wrong grouping
         ] {
             assert!(!p.regex.is_match(s), "unexpected SSN match: {}", s);
         }
@@ -241,7 +241,7 @@ mod tests {
             "4532015112830366", // 16 digits
             "4111111111111111", // 16 digits
             "5500005555555559", // 16 digits
-            "1234567890123",   // 13 digits
+            "1234567890123",    // 13 digits
         ] {
             assert!(
                 p.regex.is_match(s),

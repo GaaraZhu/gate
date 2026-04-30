@@ -212,7 +212,10 @@ pii:
     fn malformed_yaml_returns_error() {
         let result = load_from_yaml("pii: {bad: yaml: :: :");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Failed to parse config"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to parse config"));
     }
 
     #[test]

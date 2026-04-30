@@ -13,10 +13,8 @@ mod tests {
 
     fn with_only_var<F: FnOnce() -> bool>(var: &str, f: F) -> bool {
         let _guard = LOCK.lock().unwrap();
-        let saved: Vec<Option<String>> = HARNESS_VARS
-            .iter()
-            .map(|v| std::env::var(v).ok())
-            .collect();
+        let saved: Vec<Option<String>> =
+            HARNESS_VARS.iter().map(|v| std::env::var(v).ok()).collect();
         for v in HARNESS_VARS {
             unsafe { std::env::remove_var(v) };
         }
@@ -34,10 +32,8 @@ mod tests {
 
     fn with_no_vars<F: FnOnce() -> bool>(f: F) -> bool {
         let _guard = LOCK.lock().unwrap();
-        let saved: Vec<Option<String>> = HARNESS_VARS
-            .iter()
-            .map(|v| std::env::var(v).ok())
-            .collect();
+        let saved: Vec<Option<String>> =
+            HARNESS_VARS.iter().map(|v| std::env::var(v).ok()).collect();
         for v in HARNESS_VARS {
             unsafe { std::env::remove_var(v) };
         }
