@@ -10,7 +10,7 @@ PII-filtering CLI that transparently intercepts AI agent query commands and reda
 
 ## Current step
 
-**Starting from the beginning — Step 1: create the Cargo workspace.**
+**Starting with the Prototype (see docs/plan.md) — build `redact hook` and `redact run` with hardcoded patterns, manually install the hook, and verify end-to-end redaction inside a live Claude Code session.**
 
 Update this line when moving to the next step.
 

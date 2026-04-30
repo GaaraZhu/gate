@@ -6,6 +6,40 @@ Build the project bottom-up across four milestones: foundation (config + pattern
 
 This ordering puts the highest-risk component (Gate 2's correctness on real data) earliest and the harness-coupled components (which are the most fragile to test) last. If Gate 2 has problems, we want to know in week one, not week three.
 
+**Before the milestones: build a prototype first.** See the Prototype section below.
+
+---
+
+## Prototype (before Milestone 1)
+
+Goal: prove the end-to-end flow works inside Claude Code in a few hours, before investing in the full implementation.
+
+**What to build:**
+
+- `redact hook` — reads the Bash command from stdin; if `argv[0]` matches a hardcoded tool list (`tkpsql`, `tkdbr`, `mysql`, `psql`), rewrites to `redact run -- <original command>`; otherwise passes through unchanged.
+- `redact run` — spawns the subprocess, captures stdout, runs Gate 2 with hardcoded PII patterns (email, SSN, phone, credit card via Luhn), prints redacted JSON to stdout.
+
+**What to skip:**
+
+- Gate 1 (SQL inspection) — Gate 2 alone proves the safety net
+- `redact init` — manually insert the hook entry into `~/.claude/settings.json`
+- `redact config`, `redact list`, `redact validate` — hardcode tool list and patterns
+- Full config system, harness detection, atomic writes, error handling
+
+**Hook entry to install manually:**
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "redact hook" }] }
+    ]
+  }
+}
+```
+
+**Exit criterion:** inside a live Claude Code session, ask the AI to run a query tool that returns JSON with PII — observe the redacted output returned to the model. Gate 2 must catch email, SSN, and phone in a realistic JSON payload. Once this works, proceed to Milestone 1 and replace the prototype with the production implementation.
+
 ---
 
 ## Repository setup
