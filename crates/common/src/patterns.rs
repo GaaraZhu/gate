@@ -36,13 +36,13 @@ pub const BUILTIN_PATTERNS: &[BuiltinPattern] = &[
     },
     BuiltinPattern {
         name: "phone",
-        regex: r"\b(\+?1[\s.-]?)?\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}\b",
+        regex: r"\b(\+?1[\s.-]?)?\(?\d{3}\)?(?:[\s.\-]\d{3}[\s.\-]\d{4}|\d{7})\b",
         confidence: 0.70,
     },
     BuiltinPattern {
-        name: "ip",
-        regex: r"\b(?:\d{1,3}\.){3}\d{1,3}\b",
-        confidence: 0.60,
+        name: "credit_card",
+        regex: r"\b\d{13,16}\b",
+        confidence: 0.65,
     },
 ];
 
@@ -65,8 +65,7 @@ impl CompiledPattern {
     }
 
     /// Build compiled patterns from builtins, overlaying any user-supplied overrides.
-    /// User patterns with the same name as a builtin replace that builtin.
-    /// User patterns with new names are appended.
+    /// Same-named user patterns replace the builtin; new names are appended.
     pub fn from_config(
         user_patterns: &std::collections::HashMap<String, crate::config::Pattern>,
     ) -> Vec<Self> {

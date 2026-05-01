@@ -50,8 +50,8 @@ pub enum Action {
 #[derive(Debug, Deserialize, Serialize, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum WildcardPolicy {
-    #[default]
     Warn,
+    #[default]
     Reject,
 }
 

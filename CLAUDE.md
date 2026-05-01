@@ -10,9 +10,17 @@ PII-filtering CLI that transparently intercepts AI agent query commands and reda
 
 ## Current step
 
-**Starting with the Prototype (see docs/plan.md) — build `redact hook` and `redact run` with hardcoded patterns, manually install the hook, and verify end-to-end redaction inside a live Claude Code session.**
+Milestone: Milestone 2 — Gate 2 (`common/redactor.rs`)
+Step: 9–14
 
-Update this line when moving to the next step.
+Status:
+- [x] Prototype complete
+- [x] Milestone 1 complete (config, patterns, harness, error — all 31 tests pass)
+- [ ] Gate 2 implementation (`RedactPlan`, shape detection, tree walk, confidence scoring, summary)
+- [ ] Golden-file tests (8–10 input/output JSON pairs, false-negative rate = 0)
+
+Notes:
+Prototype redactor lives in `crates/redact/src/redactor.rs` (hardcoded patterns, no config integration). Milestone 2 replaces it with a production version in `crates/common/src/redactor.rs` that uses `CompiledPattern`, `Luhn`, and `Config`. Gate 1 stubs exist in `crates/gate1/` but are placeholders — implemented in Milestone 3.
 
 ## Repository structure
 
@@ -51,6 +59,17 @@ tempfile = "3"   # test-only
 ```
 
 Gate 1 uses a hand-written SQL tokenizer — do NOT add `sqlparser-rs`. See design.md for rationale.
+
+## Safety pass (required after every implementation step)
+
+Run this checklist before marking any step complete:
+
+1. **False-negative scan** — review the new/changed redaction logic and identify any PII patterns that could slip through (e.g. value types not covered by regex, Luhn bypass, forced-column path skipped).
+2. **Test coverage** — for each identified gap, add a test that would catch it. The test must fail before the fix and pass after.
+3. **Non-negotiables audit** — verify every item in the Non-negotiables section below is still upheld by the current code.
+4. **Exit criteria check** — re-read the current milestone's exit criterion in `docs/plan.md` and confirm it is fully satisfied.
+
+Do not advance the "Current step" in this file until all four items are checked.
 
 ## Non-negotiables
 
