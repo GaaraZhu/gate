@@ -10,3 +10,6 @@ serde_yaml = { workspace = true }
 regex = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
