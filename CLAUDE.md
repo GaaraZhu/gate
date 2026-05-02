@@ -10,8 +10,8 @@ PII-filtering CLI that transparently intercepts AI agent query commands and reda
 
 ## Current step
 
-Milestone: Milestone 5 — Hook surface (`hook` + `init` + `config` + `list` + `validate`)
-Step: 23–30
+Milestone: Milestone 6 — Polish & ship
+Step: 31–35
 
 Status:
 - [x] Prototype complete
@@ -19,10 +19,7 @@ Status:
 - [x] Milestone 2 complete (Gate 2 redactor — 60 tests pass, false-negative rate = 0)
 - [x] Milestone 3 complete (Gate 1 tokenizer + column extractor + build_plan — 43 tests)
 - [x] Milestone 4 complete (redact run pipeline + integration tests — 119 tests pass)
-- [ ] `redact/hook.rs` — config-driven rewrite (replace hardcoded tool list)
-- [ ] `redact/init.rs` — atomic write to ~/.claude/settings.json
-- [ ] `redact/config_cmd.rs` — starter config + $EDITOR launch
-- [ ] `redact/list.rs`, `redact/validate.rs` — read-only config inspection
+- [x] Milestone 5 complete (hook config-driven + init + config_cmd + list + validate — 154 tests pass)
 
 Notes:
 `crates/redact/src/run.rs` is the production Gate 1 + Gate 2 pipeline. Loads config,

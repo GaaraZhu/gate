@@ -1,19 +1,25 @@
+use common::config::Config;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::io::{self, Read};
-
-const INTERCEPTED_TOOLS: &[&str] = &["tkpsql", "tkdbr", "mysql", "psql"];
 
 pub fn run() {
     let mut stdin = String::new();
     io::stdin().read_to_string(&mut stdin).unwrap_or_default();
-    if let Some(output) = process(&stdin) {
+
+    // Load config; on failure passthrough so a bad config never blocks every Bash command
+    let tools: HashSet<String> = Config::load()
+        .map(|c| c.tools.into_keys().collect())
+        .unwrap_or_default();
+
+    if let Some(output) = process(&stdin, &tools) {
         print!("{}", output);
     }
-    // No output = passthrough (Claude Code allows the original command)
+    // No output → passthrough (Claude Code allows the original command)
 }
 
-/// Returns Some(json_string) to rewrite, None to pass through unchanged.
-fn process(stdin: &str) -> Option<String> {
+/// Returns `Some(json_string)` to rewrite, `None` to pass through unchanged.
+fn process(stdin: &str, tools: &HashSet<String>) -> Option<String> {
     let hook_input: Value = serde_json::from_str(stdin).ok()?;
 
     let command = hook_input
@@ -37,7 +43,7 @@ fn process(stdin: &str) -> Option<String> {
         return None;
     }
 
-    if !INTERCEPTED_TOOLS.contains(&basename.as_str()) {
+    if !tools.contains(&basename) {
         return None;
     }
 
@@ -67,6 +73,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn default_tools() -> HashSet<String> {
+        ["tkpsql", "tkdbr", "mysql", "psql"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
     fn make_input(command: &str) -> String {
         json!({
             "hook_event_name": "PreToolUse",
@@ -78,13 +91,19 @@ mod tests {
 
     #[test]
     fn passthrough_non_intercepted() {
-        assert!(process(&make_input("ls -la")).is_none());
-        assert!(process(&make_input("grep foo bar.txt")).is_none());
+        let tools = default_tools();
+        assert!(process(&make_input("ls -la"), &tools).is_none());
+        assert!(process(&make_input("grep foo bar.txt"), &tools).is_none());
     }
 
     #[test]
     fn rewrite_tkpsql() {
-        let out = process(&make_input("tkpsql --sql 'SELECT email FROM users'")).unwrap();
+        let tools = default_tools();
+        let out = process(
+            &make_input("tkpsql --sql 'SELECT email FROM users'"),
+            &tools,
+        )
+        .unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -94,8 +113,24 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_tkdbr() {
+        let tools = default_tools();
+        let out = process(
+            &make_input("tkdbr --sql 'SELECT phone FROM contacts'"),
+            &tools,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.starts_with("redact run -- tkdbr"));
+    }
+
+    #[test]
     fn rewrite_mysql() {
-        let out = process(&make_input("mysql -e 'SELECT ssn FROM patients'")).unwrap();
+        let tools = default_tools();
+        let out = process(&make_input("mysql -e 'SELECT ssn FROM patients'"), &tools).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -104,19 +139,32 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_psql() {
+        let tools = default_tools();
+        let out = process(&make_input("psql -c 'SELECT phone FROM contacts'"), &tools).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.starts_with("redact run -- psql"));
+    }
+
+    #[test]
     fn loop_avoidance() {
-        // Already a redact run command — must not rewrite again
-        assert!(process(&make_input("redact run -- tkpsql --sql 'SELECT 1'")).is_none());
+        let tools = default_tools();
+        assert!(process(&make_input("redact run -- tkpsql --sql 'SELECT 1'"), &tools).is_none());
     }
 
     #[test]
     fn invalid_json_passthrough() {
-        assert!(process("not json at all").is_none());
+        let tools = default_tools();
+        assert!(process("not json at all", &tools).is_none());
     }
 
     #[test]
     fn permission_decision_is_allow() {
-        let out = process(&make_input("psql -c 'SELECT phone FROM contacts'")).unwrap();
+        let tools = default_tools();
+        let out = process(&make_input("psql -c 'SELECT phone FROM contacts'"), &tools).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             v["hookSpecificOutput"]["permissionDecision"]
@@ -128,8 +176,63 @@ mod tests {
 
     #[test]
     fn full_path_basename_matched() {
-        // argv[0] with path prefix — basename should still match
-        let out = process(&make_input("/usr/local/bin/tkpsql --sql 'SELECT 1'"));
-        assert!(out.is_some());
+        let tools = default_tools();
+        assert!(process(
+            &make_input("/usr/local/bin/tkpsql --sql 'SELECT 1'"),
+            &tools
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn passthrough_when_tool_not_in_config() {
+        // Empty tools set — nothing is intercepted
+        let tools = HashSet::new();
+        assert!(process(
+            &make_input("tkpsql --sql 'SELECT email FROM users'"),
+            &tools
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn command_with_quoted_sql_preserved() {
+        let tools = default_tools();
+        let out = process(&make_input(r#"tkpsql --sql "SELECT 'a b' FROM t""#), &tools).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        // Original command should appear verbatim after "redact run -- "
+        assert!(cmd.contains("SELECT 'a b'") || cmd.contains(r#"SELECT \'a b\'"#));
+    }
+
+    #[test]
+    fn malformed_shell_words_passthrough() {
+        let tools = default_tools();
+        // Unclosed quote — shell_words::split will fail → passthrough
+        let input = make_input("tkpsql --sql 'unclosed");
+        assert!(process(&input, &tools).is_none());
+    }
+
+    #[test]
+    fn preserves_extra_tool_input_fields() {
+        let tools = default_tools();
+        let input = json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "tkpsql --sql 'SELECT 1'",
+                "restart": false
+            }
+        })
+        .to_string();
+        let out = process(&input, &tools).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        // restart field should still be present in updatedInput
+        assert_eq!(
+            v["hookSpecificOutput"]["updatedInput"]["restart"],
+            json!(false)
+        );
     }
 }

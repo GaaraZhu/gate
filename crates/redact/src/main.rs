@@ -5,6 +5,7 @@ mod hook;
 mod init;
 mod list;
 mod run;
+mod starter;
 mod validate;
 
 #[derive(Parser)]

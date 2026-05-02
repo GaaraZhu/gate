@@ -322,6 +322,7 @@ dependencies = [
  "clap",
  "common",
  "gate1",
+ "regex",
  "serde_json",
  "shell-words",
  "tempfile",

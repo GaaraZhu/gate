@@ -119,7 +119,7 @@ impl Config {
     }
 }
 
-fn config_path() -> Result<std::path::PathBuf> {
+pub fn config_path() -> Result<std::path::PathBuf> {
     if let Ok(path) = std::env::var("REDACT_CONFIG") {
         return Ok(std::path::PathBuf::from(path));
     }
