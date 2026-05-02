@@ -1,4 +1,5 @@
 use regex::Regex;
+use std::sync::OnceLock;
 
 pub const COLUMN_DENYLIST: &[&str] = &[
     "email",
@@ -45,6 +46,80 @@ pub const BUILTIN_PATTERNS: &[BuiltinPattern] = &[
         confidence: 0.65,
     },
 ];
+
+/// Token-to-PII-type synonym table. Entries labelled "bigram" are matched by joining
+/// consecutive token pairs (e.g. "first"+"name" → "firstname"), not as bare tokens.
+/// First match wins; table order is the tie-breaker.
+const TOKEN_SYNONYMS: &[(&str, &str)] = &[
+    ("email", "email"),
+    ("mail", "email"),
+    ("phone", "phone"),
+    ("mobile", "phone"),
+    ("tel", "phone"),
+    ("fax", "phone"),
+    ("ssn", "ssn"),
+    ("dob", "dob"),
+    ("birth", "dob"),
+    ("birthday", "dob"),
+    ("birthdate", "dob"),
+    ("card", "credit_card"),
+    ("cvv", "cvv"),
+    ("cvc", "cvv"),
+    ("passport", "passport"),
+    ("npi", "npi"),
+    ("license", "license"),
+    ("ip", "ip"),
+    // Bigram entries: matched via consecutive token pairs joined without separator.
+    // "product_name" → ["product","name"] → bigram "productname" → no match (safe).
+    // "first_name"   → ["first","name"]   → bigram "firstname"   → match.
+    ("firstname", "name"),
+    ("lastname", "name"),
+    ("fullname", "name"),
+];
+
+/// Split `name` into lowercase tokens, handling underscore/hyphen separators and camelCase.
+///
+/// "userEmail"    → ["user", "email"]
+/// "email_address"→ ["email", "address"]
+/// "SSNField"     → ["ssn", "field"]
+/// "dateOfBirth"  → ["date", "of", "birth"]
+fn tokenize_column(name: &str) -> Vec<String> {
+    static CAMEL1: OnceLock<Regex> = OnceLock::new();
+    static CAMEL2: OnceLock<Regex> = OnceLock::new();
+    // Insert a space at lowercase→UPPERCASE transitions: "userEmail" → "user Email"
+    let re1 = CAMEL1.get_or_init(|| Regex::new(r"([a-z])([A-Z])").unwrap());
+    // Insert a space before the last uppercase in an acronym run: "SSNField" → "SSN Field"
+    let re2 = CAMEL2.get_or_init(|| Regex::new(r"([A-Z]+)([A-Z][a-z])").unwrap());
+    let spaced = re1.replace_all(name, "${1} ${2}");
+    let spaced = re2.replace_all(&spaced, "${1} ${2}");
+    spaced
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_lowercase())
+        .collect()
+}
+
+/// Returns the PII type label if any token (or consecutive token bigram) of `column_name`
+/// matches a sensitive synonym. First match in `TOKEN_SYNONYMS` wins.
+///
+/// Avoids over-broad "name" matching: "product_name" → `None`; "first_name" → `Some("name")`.
+pub fn classify_column(column_name: &str) -> Option<&'static str> {
+    let tokens = tokenize_column(column_name);
+    // Single-token pass
+    for token in &tokens {
+        if let Some(&(_, pii_type)) = TOKEN_SYNONYMS.iter().find(|(t, _)| *t == token.as_str()) {
+            return Some(pii_type);
+        }
+    }
+    // Bigram pass: join each consecutive pair and check
+    for pair in tokens.windows(2) {
+        let bigram = format!("{}{}", pair[0], pair[1]);
+        if let Some(&(_, pii_type)) = TOKEN_SYNONYMS.iter().find(|(t, _)| *t == bigram.as_str()) {
+            return Some(pii_type);
+        }
+    }
+    None
+}
 
 pub struct CompiledPattern {
     pub name: String,
@@ -339,5 +414,84 @@ mod tests {
         // "4111111111111111" valid, so same with non-digit noise that doesn't change digit count.
         // Padding with letters shouldn't cause a 20-digit rejection since letters are filtered.
         assert!(Luhn::check("4111111111111111abc")); // still 16 digits after filtering
+    }
+
+    // --- classify_column ---
+
+    #[test]
+    fn classify_exact_single_token_names() {
+        assert_eq!(classify_column("email"), Some("email"));
+        assert_eq!(classify_column("phone"), Some("phone"));
+        assert_eq!(classify_column("ssn"), Some("ssn"));
+        assert_eq!(classify_column("dob"), Some("dob"));
+        assert_eq!(classify_column("cvv"), Some("cvv"));
+        assert_eq!(classify_column("npi"), Some("npi"));
+        assert_eq!(classify_column("passport"), Some("passport"));
+    }
+
+    #[test]
+    fn classify_synonyms() {
+        assert_eq!(classify_column("mail"), Some("email"));
+        assert_eq!(classify_column("mobile"), Some("phone"));
+        assert_eq!(classify_column("tel"), Some("phone"));
+        assert_eq!(classify_column("birth"), Some("dob"));
+        assert_eq!(classify_column("birthday"), Some("dob"));
+        assert_eq!(classify_column("birthdate"), Some("dob"));
+        assert_eq!(classify_column("card"), Some("credit_card"));
+        assert_eq!(classify_column("cvc"), Some("cvv"));
+        assert_eq!(classify_column("license"), Some("license"));
+        assert_eq!(classify_column("ip"), Some("ip"));
+    }
+
+    #[test]
+    fn classify_underscore_separated() {
+        assert_eq!(classify_column("email_address"), Some("email"));
+        assert_eq!(classify_column("phone_number"), Some("phone"));
+        assert_eq!(classify_column("first_name"), Some("name"));
+        assert_eq!(classify_column("last_name"), Some("name"));
+        assert_eq!(classify_column("full_name"), Some("name"));
+        assert_eq!(classify_column("credit_card"), Some("credit_card"));
+        assert_eq!(classify_column("card_number"), Some("credit_card"));
+        assert_eq!(classify_column("license_number"), Some("license"));
+        assert_eq!(classify_column("ip_address"), Some("ip"));
+    }
+
+    #[test]
+    fn classify_camel_case() {
+        assert_eq!(classify_column("userEmail"), Some("email"));
+        assert_eq!(classify_column("mobileNumber"), Some("phone"));
+        assert_eq!(classify_column("dateOfBirth"), Some("dob"));
+        assert_eq!(classify_column("SSNField"), Some("ssn"));
+        assert_eq!(classify_column("firstName"), Some("name"));
+        assert_eq!(classify_column("lastName"), Some("name"));
+        assert_eq!(classify_column("fullName"), Some("name"));
+        assert_eq!(classify_column("cardNumber"), Some("credit_card"));
+        assert_eq!(classify_column("ipAddress"), Some("ip"));
+    }
+
+    #[test]
+    fn classify_all_caps() {
+        assert_eq!(classify_column("EMAIL"), Some("email"));
+        assert_eq!(classify_column("SSN"), Some("ssn"));
+        assert_eq!(classify_column("PHONE"), Some("phone"));
+    }
+
+    #[test]
+    fn classify_name_bigram_no_false_positives() {
+        // "name" alone must not trigger — only first/last/full + name bigrams
+        assert_eq!(classify_column("product_name"), None);
+        assert_eq!(classify_column("company_name"), None);
+        assert_eq!(classify_column("category_name"), None);
+        assert_eq!(classify_column("name"), None);
+    }
+
+    #[test]
+    fn classify_returns_none_for_non_pii() {
+        assert_eq!(classify_column("id"), None);
+        assert_eq!(classify_column("count"), None);
+        assert_eq!(classify_column("created_at"), None);
+        assert_eq!(classify_column("status"), None);
+        assert_eq!(classify_column("amount"), None);
+        assert_eq!(classify_column("description"), None);
     }
 }
