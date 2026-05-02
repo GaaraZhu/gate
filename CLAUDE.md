@@ -10,24 +10,25 @@ PII-filtering CLI that transparently intercepts AI agent query commands and reda
 
 ## Current step
 
-Milestone: Milestone 4 — `redact run` (the worker)
-Step: 19–22
+Milestone: Milestone 5 — Hook surface (`hook` + `init` + `config` + `list` + `validate`)
+Step: 23–30
 
 Status:
 - [x] Prototype complete
 - [x] Milestone 1 complete (config, patterns, harness, error — all 31 tests pass)
 - [x] Milestone 2 complete (Gate 2 redactor — 60 tests pass, false-negative rate = 0)
-- [x] Milestone 3 complete (Gate 1 tokenizer + column extractor + build_plan — 121 tests pass)
-- [ ] `redact/main.rs` — clap dispatch for all subcommands
-- [ ] `redact/run.rs` — Gate 1 + Gate 2 pipeline, subprocess spawn
-- [ ] Integration tests with fake-tool binary
+- [x] Milestone 3 complete (Gate 1 tokenizer + column extractor + build_plan — 43 tests)
+- [x] Milestone 4 complete (redact run pipeline + integration tests — 119 tests pass)
+- [ ] `redact/hook.rs` — config-driven rewrite (replace hardcoded tool list)
+- [ ] `redact/init.rs` — atomic write to ~/.claude/settings.json
+- [ ] `redact/config_cmd.rs` — starter config + $EDITOR launch
+- [ ] `redact/list.rs`, `redact/validate.rs` — read-only config inspection
 
 Notes:
-`crates/gate1/src/tokenizer.rs` — hand-written SQL tokenizer (no sqlparser-rs).
-`crates/gate1/src/lib.rs` — `extract_columns()` + `build_plan()`. Matches against
-`col.original` (not alias) for denylist, stores `output_name` as the `forced_columns` key.
-Known limitations documented at the top of `lib.rs` (function calls, CTEs, subqueries
-in SELECT list, non-standard dialects).
+`crates/redact/src/run.rs` is the production Gate 1 + Gate 2 pipeline. Loads config,
+runs gate1::extract_columns + gate1::build_plan on the SQL arg, spawns the subprocess,
+pipes stdout through common::redactor::redact. Subcommand stubs for Init/Config/List/
+Validate are in place with correct harness gating but not yet fully implemented.
 
 ## Repository structure
 

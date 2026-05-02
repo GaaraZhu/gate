@@ -1,30 +1,43 @@
-use serde_json::{json, Value};
 use std::io::Write;
-use std::process::{Command, Stdio};
 
-use crate::redactor;
+use common::config::Config;
+use common::error::exit_with_error;
+use common::redactor::{redact, RedactPlan};
+use gate1::{build_plan, extract_columns};
 
 pub fn run(args: Vec<String>) {
     if args.is_empty() {
-        println!("{}", json!({"error": "redact run: no command specified"}));
-        std::process::exit(1);
+        exit_with_error("redact run: no command specified");
     }
 
-    let tool = &args[0];
-    let tool_args = &args[1..];
+    let config = match Config::load() {
+        Ok(c) => c,
+        Err(e) => exit_with_error(&format!("failed to load config: {e}")),
+    };
 
-    let output = match Command::new(tool)
-        .args(tool_args)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+    let basename = std::path::Path::new(&args[0])
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(args[0].as_str())
+        .to_string();
+
+    // Gate 1: build redact plan from SQL if tool has sql_arg configured
+    let plan = build_gate1_plan(&args, &basename, &config);
+
+    if plan.rejected {
+        exit_with_error("query rejected by Gate 1: SELECT * or denylisted column not permitted");
+    }
+
+    // Spawn subprocess; stderr passes through unchanged
+    let output = match std::process::Command::new(&args[0])
+        .args(&args[1..])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
         .output()
     {
         Ok(o) => o,
-        Err(e) => {
-            println!("{}", json!({"error": format!("{}: {}", tool, e)}));
-            std::process::exit(1);
-        }
+        Err(e) => exit_with_error(&format!("{basename}: {e}")),
     };
 
     // Non-zero exit: forward stdout unchanged and propagate exit code
@@ -35,41 +48,55 @@ pub fn run(args: Vec<String>) {
 
     let stdout_str = String::from_utf8_lossy(&output.stdout).into_owned();
 
-    // Non-JSON output: forward unchanged
-    let payload: Value = match serde_json::from_str(stdout_str.trim()) {
+    // Non-JSON output: forward unchanged (tool may emit a banner or plain text)
+    let payload: serde_json::Value = match serde_json::from_str(stdout_str.trim()) {
         Ok(v) => v,
         Err(_) => {
-            print!("{}", stdout_str);
+            print!("{stdout_str}");
             return;
         }
     };
 
-    // Error JSON passthrough — never attach a summary to error responses
-    if let Value::Object(ref map) = payload {
-        if map.contains_key("error") {
-            print!("{}", serde_json::to_string(&payload).unwrap_or(stdout_str));
-            return;
+    // Gate 2
+    let redacted = redact(payload, &plan, &config.pii);
+
+    println!("{}", serde_json::to_string(&redacted).unwrap());
+}
+
+fn build_gate1_plan(args: &[String], basename: &str, config: &Config) -> RedactPlan {
+    let sql_flag = match config
+        .tools
+        .get(basename)
+        .and_then(|t| t.sql_arg.as_deref())
+    {
+        Some(f) => f,
+        None => return RedactPlan::empty(),
+    };
+
+    let sql = match find_flag_value(args, sql_flag) {
+        Some(s) => s,
+        None => return RedactPlan::empty(),
+    };
+
+    let extraction = extract_columns(sql);
+    build_plan(
+        &extraction,
+        &config.pii.action,
+        &config.pii.wildcard_policy,
+        &config.pii.effective_column_names(),
+    )
+}
+
+/// Find the value of `flag` in `args`, supporting both `--flag VALUE` and `--flag=VALUE`.
+fn find_flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    let prefix = format!("{flag}=");
+    for (i, arg) in args.iter().enumerate() {
+        if arg == flag {
+            return args.get(i + 1).map(String::as_str);
+        }
+        if let Some(val) = arg.strip_prefix(&prefix) {
+            return Some(val);
         }
     }
-
-    let result = redactor::redact(payload);
-    let summary = json!({
-        "redacted": result.redacted_count,
-        "types": result.types,
-        "warnings": result.warnings,
-    });
-
-    let out = match result.value {
-        Value::Object(mut map) => {
-            map.insert("_redact_summary".to_string(), summary);
-            Value::Object(map)
-        }
-        Value::Array(arr) => json!({
-            "rows": arr,
-            "_redact_summary": summary,
-        }),
-        other => other,
-    };
-
-    println!("{}", serde_json::to_string(&out).unwrap());
+    None
 }
