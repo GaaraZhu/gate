@@ -78,6 +78,6 @@ All data is synthetic. SSNs use the `000-xx-xxxx` prefix (never issued). Credit 
 ## Tear down
 
 ```sh
-docker compose -f dev/docker-compose.yml down        # stop, keep data
-docker compose -f dev/docker-compose.yml down -v     # stop and delete volume
+cd dev && docker compose down        # stop, keep data
+cd dev && docker compose down -v     # stop and delete volume
 ```

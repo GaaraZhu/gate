@@ -7,11 +7,11 @@ DEV="$ROOT/dev"
 BIN="$ROOT/target/release"
 
 echo "==> Starting PostgreSQL..."
-docker compose -f "$DEV/docker-compose.yml" up -d
+(cd "$DEV" && docker compose up -d)
 
 echo -n "==> Waiting for PostgreSQL to be ready"
-until docker compose -f "$DEV/docker-compose.yml" exec -T postgres \
-    pg_isready -U redact -d redact_demo >/dev/null 2>&1; do
+until (cd "$DEV" && docker compose exec -T postgres \
+    pg_isready -U redact -d redact_demo) >/dev/null 2>&1; do
   printf '.'
   sleep 1
 done
