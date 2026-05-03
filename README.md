@@ -37,8 +37,8 @@ AI asks to run: tkpsql query --sql "SELECT * FROM users"
 
 | Tool | Type | Status |
 |---|---|---|
-| `tkpsql` | PostgreSQL ([toolkit](https://github.com/GaaraZhu/toolkit)-managed) | Supported |
-| `tkdbr` | DynamoDB ([toolkit](https://github.com/GaaraZhu/toolkit)-managed) | Supported |
+| `tkpsql` | PostgreSQL ([toolkit](https://github.com/scott-abernethy/toolkit)-managed) | Supported |
+| `tkdbr` | DynamoDB ([toolkit](https://github.com/scott-abernethy/toolkit)-managed) | Supported |
 | `psql` | PostgreSQL (raw client) | Planned — see roadmap |
 | `mysql` | MySQL (raw client) | Planned — see roadmap |
 
@@ -167,7 +167,7 @@ The env var takes precedence over the config file, so it works even when `enable
 | Layer | Protects against |
 |---|---|
 | Agent harness sandbox | AI bypassing wrappers by invoking raw clients directly |
-| [toolkit](https://github.com/GaaraZhu/toolkit) | Write operations; credential exposure |
+| [toolkit](https://github.com/scott-abernethy/toolkit) | Write operations; credential exposure |
 | **redact** | PII leaking through query results |
 
 `redact`'s config contains no credentials. For production deployments with sensitive credentials, wrap a toolkit-managed client (`tkpsql`/`tkdbr`) — toolkit handles credential injection.
