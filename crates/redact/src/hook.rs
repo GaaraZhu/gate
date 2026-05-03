@@ -370,11 +370,7 @@ mod tests {
         // psql appears as the value of --db, not as a command — must passthrough
         let config = default_config();
         assert!(
-            process(
-                &make_input("some-tool --db psql -c 'SELECT id'"),
-                &config
-            )
-            .is_none(),
+            process(&make_input("some-tool --db psql -c 'SELECT id'"), &config).is_none(),
             "should not intercept when tool name is a flag value"
         );
     }
