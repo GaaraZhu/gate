@@ -37,8 +37,13 @@ pub fn run(args: Vec<String>) {
         .collect();
 
     // Find the configured tool in the command (may be preceded by wrapper binaries such as rtk).
-    let (tool_idx, basename) = command::find_tool_token(cmd_args, &config)
-        .unwrap_or_else(|| (0, command::token_basename(&cmd_args[0])));
+    // Nested matches (tool inside sh -c "...") fall back to index 0 like the unknown-tool path,
+    // since run.rs operates on the already-unwrapped outer command.
+    let (tool_idx, basename) = match command::find_tool_token(cmd_args, &config) {
+        Some(command::ToolMatch::Direct { idx, basename }) => (idx, basename),
+        Some(command::ToolMatch::Nested { basename }) => (0, basename),
+        None => (0, command::token_basename(&cmd_args[0])),
+    };
 
     // Gate 1: build redact plan from SQL if tool has sql_arg configured
     let plan = build_gate1_plan(cmd_args, &basename, &config);

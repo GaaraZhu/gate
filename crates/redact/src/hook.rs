@@ -43,16 +43,25 @@ fn process(stdin: &str, config: &Config) -> Option<String> {
     }
 
     // Find the configured tool anywhere in the positional tokens (may be preceded by wrappers)
-    let (tool_idx, basename) = command::find_tool_token(&tokens, config)?;
-    let tool_config = config.tools.get(&basename)?;
+    let tool_match = command::find_tool_token(&tokens, config)?;
+    let basename = match &tool_match {
+        command::ToolMatch::Direct { basename, .. } => basename,
+        command::ToolMatch::Nested { basename } => basename,
+    };
+    let tool_config = config.tools.get(basename)?;
 
-    // If the tool has a json_tool configured, rewrite the command to use it:
-    // replace the tool token and translate the sql_arg flag to --sql.
-    let effective_command = match (&tool_config.json_tool, &tool_config.sql_arg) {
-        (Some(json_tool), Some(sql_arg)) => {
-            rewrite_to_json_tool(&tokens, tool_idx, sql_arg, json_tool)
+    // For nested invocations (tool inside `sh -c "..."`) skip json_tool rewriting —
+    // the json_tool binary may not exist in the target environment (container/pod).
+    let effective_command = match &tool_match {
+        command::ToolMatch::Direct { idx, .. } => {
+            match (&tool_config.json_tool, &tool_config.sql_arg) {
+                (Some(json_tool), Some(sql_arg)) => {
+                    rewrite_to_json_tool(&tokens, *idx, sql_arg, json_tool)
+                }
+                _ => command.clone(),
+            }
         }
-        _ => command.clone(),
+        command::ToolMatch::Nested { .. } => command.clone(),
     };
 
     // Rewrite: preserve all tool_input fields, replace command
@@ -481,5 +490,148 @@ mod tests {
             "unexpected cmd: {cmd}"
         );
         assert!(!cmd.contains("psql-json"), "should not rewrite: {cmd}");
+    }
+
+    // ── shell interpreter (-c) tests ──────────────────────────────────────────
+
+    #[test]
+    fn sh_c_psql_intercepted() {
+        let config = default_config();
+        let out = process(
+            &make_input(r#"sh -c "psql -c 'SELECT email FROM users'""#),
+            &config,
+        );
+        assert!(out.is_some(), "sh -c psql must be intercepted");
+        let v: Value = serde_json::from_str(&out.unwrap()).unwrap();
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.starts_with("redact run --"), "got: {cmd}");
+    }
+
+    #[test]
+    fn bash_c_psql_intercepted() {
+        let config = default_config();
+        let out = process(
+            &make_input(r#"bash -c "psql -c 'SELECT email FROM users'""#),
+            &config,
+        );
+        assert!(out.is_some(), "bash -c psql must be intercepted");
+    }
+
+    #[test]
+    fn docker_exec_sh_c_psql_intercepted() {
+        let config = default_config();
+        let out = process(
+            &make_input(r#"docker exec mycontainer sh -c "psql -c 'SELECT email FROM users'""#),
+            &config,
+        );
+        assert!(out.is_some(), "docker exec sh -c psql must be intercepted");
+        let v: Value = serde_json::from_str(&out.unwrap()).unwrap();
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.starts_with("redact run --"), "got: {cmd}");
+    }
+
+    #[test]
+    fn sh_c_nested_skips_json_tool_rewrite() {
+        // json_tool rewrite is skipped for nested invocations: psql-json may not exist
+        // in the target environment (remote container/pod)
+        let config = make_config(&[("psql", Some("-c"), Some("psql-json"))]);
+        let out = process(
+            &make_input(r#"sh -c "psql -c 'SELECT email FROM users'""#),
+            &config,
+        );
+        assert!(out.is_some(), "must be intercepted");
+        let v: Value = serde_json::from_str(&out.unwrap()).unwrap();
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.starts_with("redact run --"), "got: {cmd}");
+        assert!(
+            !cmd.contains("psql-json"),
+            "must not rewrite to json_tool for nested invocation: {cmd}"
+        );
+    }
+
+    // ── kubectl exec (--) argument-terminator tests ───────────────────────────
+
+    #[test]
+    fn kubectl_exec_double_dash_psql_intercepted() {
+        let config = default_config();
+        let out = process(
+            &make_input("kubectl exec mypod -- psql -c 'SELECT email FROM users'"),
+            &config,
+        );
+        assert!(out.is_some(), "kubectl exec -- psql must be intercepted");
+        let v: Value = serde_json::from_str(&out.unwrap()).unwrap();
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.starts_with("redact run --"), "got: {cmd}");
+    }
+
+    #[test]
+    fn kubectl_exec_with_namespace_intercepted() {
+        let config = default_config();
+        let out = process(
+            &make_input("kubectl exec -n production mypod -- psql -c 'SELECT email FROM users'"),
+            &config,
+        );
+        assert!(
+            out.is_some(),
+            "kubectl exec -n ns pod -- psql must be intercepted"
+        );
+    }
+
+    #[test]
+    fn kubectl_exec_with_it_flags_intercepted() {
+        let config = default_config();
+        let out = process(
+            &make_input("kubectl exec -it mypod -- psql -c 'SELECT email FROM users'"),
+            &config,
+        );
+        assert!(
+            out.is_some(),
+            "kubectl exec -it pod -- psql must be intercepted"
+        );
+    }
+
+    #[test]
+    fn kubectl_exec_double_dash_sh_c_psql_intercepted() {
+        // Both blind spots combined: -- terminator + sh -c nesting
+        let config = default_config();
+        let out = process(
+            &make_input(r#"kubectl exec mypod -- sh -c "psql -c 'SELECT email FROM users'""#),
+            &config,
+        );
+        assert!(
+            out.is_some(),
+            "kubectl exec -- sh -c psql must be intercepted"
+        );
+        let v: Value = serde_json::from_str(&out.unwrap()).unwrap();
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.starts_with("redact run --"), "got: {cmd}");
+    }
+
+    #[test]
+    fn kubectl_exec_double_dash_sh_c_skips_json_tool_rewrite() {
+        let config = make_config(&[("psql", Some("-c"), Some("psql-json"))]);
+        let out = process(
+            &make_input(r#"kubectl exec mypod -- sh -c "psql -c 'SELECT email FROM users'""#),
+            &config,
+        );
+        assert!(out.is_some(), "must be intercepted");
+        let v: Value = serde_json::from_str(&out.unwrap()).unwrap();
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        assert!(
+            !cmd.contains("psql-json"),
+            "must not rewrite to json_tool for nested invocation: {cmd}"
+        );
     }
 }
