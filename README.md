@@ -25,6 +25,12 @@ AI asks to run: tkpsql --sql "SELECT id, email FROM users"
          {"id": 1, "email": "[PII:email]", "_redact_summary": {...}}
 ```
 
+## Demo
+
+A Claude Code session querying a local Postgres database. The agent asked for all user rows in plain English; `redact` intercepted the query, blocked `SELECT *` under `wildcard_policy: reject`, and returned only the non-PII columns — `email` and `credit_card` never reached the model context.
+
+![redact blocking PII in a Claude Code session](docs/demo.jpg)
+
 ## Installation
 
 ```bash
