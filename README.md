@@ -6,7 +6,7 @@ AI coding agents querying production databases can inadvertently exfiltrate PII.
 
 ## Demo
 
-A Claude Code session querying a local Postgres database. The agent asked for all user rows in plain English; `redact` intercepted the query, blocked `SELECT *` under `wildcard_policy: reject`, and returned only the non-PII columns — `email` and `credit_card` never reached the model context.
+A Claude Code session querying a local Postgres database. The agent asked for all users in plain English; `redact` intercepted the query and returned all columns — but masked the values of `email` and `credit_card` with `[PII:email]` and `[PII:credit_card]` before they reached the model context.
 
 ![redact blocking PII in a Claude Code session](docs/demo.jpg)
 
