@@ -189,8 +189,7 @@ mod tests {
     #[test]
     fn rewrite_mysql() {
         let config = default_config();
-        let out =
-            process(&make_input("mysql -e 'SELECT ssn FROM patients'"), &config).unwrap();
+        let out = process(&make_input("mysql -e 'SELECT ssn FROM patients'"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -212,7 +211,11 @@ mod tests {
     #[test]
     fn loop_avoidance() {
         let config = default_config();
-        assert!(process(&make_input("redact run -- tkpsql --sql 'SELECT 1'"), &config).is_none());
+        assert!(process(
+            &make_input("redact run -- tkpsql --sql 'SELECT 1'"),
+            &config
+        )
+        .is_none());
     }
 
     #[test]
@@ -257,7 +260,11 @@ mod tests {
     #[test]
     fn command_with_quoted_sql_preserved() {
         let config = default_config();
-        let out = process(&make_input(r#"tkpsql --sql "SELECT 'a b' FROM t""#), &config).unwrap();
+        let out = process(
+            &make_input(r#"tkpsql --sql "SELECT 'a b' FROM t""#),
+            &config,
+        )
+        .unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -328,11 +335,7 @@ mod tests {
     #[test]
     fn json_tool_rewrites_binary_and_flag() {
         let config = make_config(&[("psql", Some("-c"), Some("psql-json"))]);
-        let out = process(
-            &make_input("psql -c 'SELECT email FROM users'"),
-            &config,
-        )
-        .unwrap();
+        let out = process(&make_input("psql -c 'SELECT email FROM users'"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -340,17 +343,16 @@ mod tests {
         // Binary replaced and flag translated
         assert!(cmd.contains("psql-json"), "expected psql-json in: {cmd}");
         assert!(cmd.contains("--sql"), "expected --sql in: {cmd}");
-        assert!(!cmd.contains("psql-json-json"), "double-rewrite guard: {cmd}");
+        assert!(
+            !cmd.contains("psql-json-json"),
+            "double-rewrite guard: {cmd}"
+        );
     }
 
     #[test]
     fn json_tool_flag_equals_form() {
         let config = make_config(&[("psql", Some("-c"), Some("psql-json"))]);
-        let out = process(
-            &make_input("psql -c='SELECT id FROM t'"),
-            &config,
-        )
-        .unwrap();
+        let out = process(&make_input("psql -c='SELECT id FROM t'"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -378,11 +380,7 @@ mod tests {
     #[test]
     fn json_tool_mysql_rewrite() {
         let config = make_config(&[("mysql", Some("-e"), Some("mysql-json"))]);
-        let out = process(
-            &make_input("mysql -e 'SELECT email FROM users'"),
-            &config,
-        )
-        .unwrap();
+        let out = process(&make_input("mysql -e 'SELECT email FROM users'"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -394,16 +392,15 @@ mod tests {
     #[test]
     fn json_tool_sqlcmd_rewrite() {
         let config = make_config(&[("sqlcmd", Some("-Q"), Some("sqlcmd-json"))]);
-        let out = process(
-            &make_input("sqlcmd -Q 'SELECT email FROM users'"),
-            &config,
-        )
-        .unwrap();
+        let out = process(&make_input("sqlcmd -Q 'SELECT email FROM users'"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
             .unwrap();
-        assert!(cmd.contains("sqlcmd-json"), "expected sqlcmd-json in: {cmd}");
+        assert!(
+            cmd.contains("sqlcmd-json"),
+            "expected sqlcmd-json in: {cmd}"
+        );
         assert!(cmd.contains("--sql"), "expected --sql in: {cmd}");
     }
 
@@ -411,16 +408,15 @@ mod tests {
     fn no_json_tool_uses_original_command() {
         // Tool in config but no json_tool: original command passed to redact run unchanged
         let config = make_config(&[("psql", Some("-c"), None)]);
-        let out = process(
-            &make_input("psql -c 'SELECT id FROM t'"),
-            &config,
-        )
-        .unwrap();
+        let out = process(&make_input("psql -c 'SELECT id FROM t'"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
             .unwrap();
-        assert!(cmd.starts_with("redact run -- psql"), "unexpected cmd: {cmd}");
+        assert!(
+            cmd.starts_with("redact run -- psql"),
+            "unexpected cmd: {cmd}"
+        );
         assert!(!cmd.contains("psql-json"), "should not rewrite: {cmd}");
     }
 }

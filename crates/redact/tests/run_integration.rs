@@ -244,15 +244,22 @@ fn json_tool_binary_spawned_and_sql_arg_translated() {
     );
     let config = write_config(
         &dir,
-        &format!(
-            "tools:\n  psql:\n    sql_arg: \"-c\"\n    json_tool: \"{json_wrapper}\"\n"
-        ),
+        &format!("tools:\n  psql:\n    sql_arg: \"-c\"\n    json_tool: \"{json_wrapper}\"\n"),
     );
     // Pass a non-existent psql path — if run.rs spawns it instead of the wrapper, ENOENT.
     let fake_psql = dir.path().join("psql").to_str().unwrap().to_string();
-    let out = redact_run(&config, &fake_psql, &["-U", "redact", "-c", "SELECT id, email FROM users"]);
+    let out = redact_run(
+        &config,
+        &fake_psql,
+        &["-U", "redact", "-c", "SELECT id, email FROM users"],
+    );
 
-    assert_eq!(exit_code(&out), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        exit_code(&out),
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
     assert_eq!(v["rows"][0]["email"], "[PII:email]");
     assert_eq!(v["rows"][0]["id"], 1);
@@ -270,14 +277,17 @@ fn json_tool_equals_form_flag_translated() {
     );
     let config = write_config(
         &dir,
-        &format!(
-            "tools:\n  psql:\n    sql_arg: \"-c\"\n    json_tool: \"{json_wrapper}\"\n"
-        ),
+        &format!("tools:\n  psql:\n    sql_arg: \"-c\"\n    json_tool: \"{json_wrapper}\"\n"),
     );
     let fake_psql = dir.path().join("psql").to_str().unwrap().to_string();
     let out = redact_run(&config, &fake_psql, &["-c=SELECT id, email FROM users"]);
 
-    assert_eq!(exit_code(&out), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        exit_code(&out),
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
     assert_eq!(v["rows"][0]["email"], "[PII:email]");
 }

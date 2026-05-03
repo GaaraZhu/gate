@@ -25,7 +25,9 @@ pub fn run(args: Vec<String>) {
     let (env_tokens, cmd_args) = args.split_at(env_count);
 
     if cmd_args.is_empty() {
-        exit_with_error("redact run: no command after env vars. Usage: redact run -- <tool> [args...]");
+        exit_with_error(
+            "redact run: no command after env vars. Usage: redact run -- <tool> [args...]",
+        );
     }
 
     let env_pairs: Vec<(&str, &str)> = env_tokens
