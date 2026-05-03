@@ -4,6 +4,12 @@ PII-filtering CLI that transparently intercepts AI agent query commands and reda
 
 AI coding agents querying production databases can inadvertently exfiltrate PII. A single `SELECT *` against a users table exposes emails, SSNs, and payment data directly into the model's context window — and from there into logs, prompts, and training pipelines. `redact` stops this without requiring any changes to the AI's prompts or query tools.
 
+## Demo
+
+A Claude Code session querying a local Postgres database. The agent asked for all user rows in plain English; `redact` intercepted the query, blocked `SELECT *` under `wildcard_policy: reject`, and returned only the non-PII columns — `email` and `credit_card` never reached the model context.
+
+![redact blocking PII in a Claude Code session](docs/demo.jpg)
+
 ## How it works
 
 `redact` registers a [`PreToolUse` hook](https://docs.anthropic.com/en/docs/claude-code/hooks) in the agent harness. Every Bash command the AI tries to run passes through `redact hook` first. Commands that match a configured tool are silently rewritten to route through `redact run`, which applies two sequential detection gates and returns sanitized JSON. The AI sees the same JSON structure as before, with PII values replaced by typed placeholders like `[PII:email]`.
@@ -24,12 +30,6 @@ AI asks to run: tkpsql --sql "SELECT id, email FROM users"
                         │
          {"id": 1, "email": "[PII:email]", "_redact_summary": {...}}
 ```
-
-## Demo
-
-A Claude Code session querying a local Postgres database. The agent asked for all user rows in plain English; `redact` intercepted the query, blocked `SELECT *` under `wildcard_policy: reject`, and returned only the non-PII columns — `email` and `credit_card` never reached the model context.
-
-![redact blocking PII in a Claude Code session](docs/demo.jpg)
 
 ## Installation
 
