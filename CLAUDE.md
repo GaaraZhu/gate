@@ -49,6 +49,18 @@ cargo fmt --check
 
 Run these after every step. Do not move to the next step until all pass.
 
+## Before every commit
+
+Run all checks from the workspace root and fix any failures before committing:
+
+```bash
+cargo fmt --all
+cargo clippy -- -D warnings
+cargo test --all
+```
+
+Never commit if any of these fail.
+
 ## Dependencies (pin these in workspace Cargo.toml)
 
 ```toml
