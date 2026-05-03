@@ -71,6 +71,9 @@ redact config
 Config lives at `~/.config/redact/config.yaml` (override with `REDACT_CONFIG`).
 
 ```yaml
+# Set to false to disable all PII redaction (or use REDACT_DISABLED=1 for a session).
+enabled: true
+
 tools:
   tkpsql:
     sql_arg: "--sql"
@@ -152,10 +155,10 @@ To disable redaction for a single shell session without editing the config file,
 
 ```bash
 export REDACT_DISABLED=1   # disable for this session
-export REDACT_DISABLED=0   # re-enable (or just unset it)
+unset REDACT_DISABLED      # re-enable
 ```
 
-The env var takes precedence over the config file, so it works even if `enabled: true` is set in config.
+The env var takes precedence over the config file, so it works even when `enabled: true` is set.
 
 ## Security model
 
