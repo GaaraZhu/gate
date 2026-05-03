@@ -6,9 +6,9 @@ AI coding agents querying production databases can inadvertently exfiltrate PII.
 
 ## Demo
 
-A Claude Code session querying a local Postgres database. The agent asked for all users in plain English; `redact` intercepted the query and returned all columns — but masked the values of `email` and `credit_card` with `[PII:email]` and `[PII:credit_card]` before they reached the model context.
+A Claude Code session querying a local Postgres database via `tkpsql`. The agent asked for all users in plain English; `redact` intercepted the query and returned all columns — but masked the values of `email` and `credit_card` with `[PII:email]` and `[PII:credit_card]` before they reached the model context.
 
-![redact blocking PII in a Claude Code session](docs/demo.jpg)
+![redact blocking PII in a Claude Code session using tkpsql](docs/demo-tkpsql.jpg)
 
 ## How it works
 
@@ -17,11 +17,11 @@ A Claude Code session querying a local Postgres database. The agent asked for al
 Humans and CI scripts running outside the agent harness are unaffected — no wrapper scripts are installed on PATH.
 
 ```
-AI asks to run: psql -c "SELECT * FROM users"
+AI asks to run: tkpsql query --sql "SELECT * FROM users"
                         │
               PreToolUse hook fires
                         │
-              redact hook rewrites to: redact run -- psql -c "..."
+              redact hook rewrites to: redact run -- tkpsql query --sql "..."
                         │
          ┌──────────────┴──────────────┐
          │ Gate 1: SQL inspection      │  SELECT * → no column hints, defer to Gate 2
@@ -30,6 +30,23 @@ AI asks to run: psql -c "SELECT * FROM users"
                         │
          {"id": 1, "username": "alice", ..., "email": "[PII:email]", "credit_card": "[PII:credit_card]", "_redact_summary": {...}}
 ```
+
+## Supported tools
+
+`redact` currently supports tools that **output JSON natively**. The AI sees the same structured response it always did, with PII values replaced in-place.
+
+| Tool | Type | Status |
+|---|---|---|
+| `tkpsql` | PostgreSQL ([toolkit](https://github.com/GaaraZhu/toolkit)-managed) | Supported |
+| `tkdbr` | DynamoDB ([toolkit](https://github.com/GaaraZhu/toolkit)-managed) | Supported |
+| `psql` | PostgreSQL (raw client) | Planned — see roadmap |
+| `mysql` | MySQL (raw client) | Planned — see roadmap |
+
+Raw clients like `psql` and `mysql` output plain text by default, not JSON. Support is planned via automatic SQL rewriting: `redact` will wrap the query in database-native JSON functions (`json_agg`/`JSON_ARRAYAGG`) before spawning the subprocess — no wrapper binaries required.
+
+![Future: redact blocking PII via psql with SQL rewrite](docs/demo-psql.jpg)
+
+> **Roadmap.** The screenshot above shows a dev preview of `psql` support coming in the next release. `redact` will rewrite `SELECT * FROM users` into `SELECT json_agg(row_to_json(_r)) FROM (SELECT * FROM users) _r`, produce the same JSON shape as `tkpsql`, and apply both gates as today. Non-`SELECT` statements (`\d`, `COPY`, DML) will fail closed rather than forward unredacted output.
 
 ## Installation
 
@@ -59,19 +76,8 @@ tools:
     sql_arg: "--sql"
   tkdbr:
     sql_arg: "--sql"
-  mysql:
-    sql_arg: "-e"
-    json_tool: "mysql-json"   # spawn this wrapper instead; it outputs JSON
-  psql:
-    sql_arg: "-c"
-    json_tool: "psql-json"    # spawn this wrapper instead; it outputs JSON
-  # sqlite3 takes SQL as a positional arg, not a flag:
-  # sqlite3:
-  #   sql_arg: null
-
-# json_tool (optional): when set, redact spawns this binary instead of the original tool
-# and translates its sql_arg flag to --sql. Use this for raw clients (psql, mysql) that
-# don't output JSON natively — point json_tool at a thin wrapper that does.
+  # psql and mysql support is coming in the next release.
+  # Raw clients will be supported via automatic SQL rewriting — no wrapper binaries needed.
 
 pii:
   # Column names that indicate PII regardless of value content (case-insensitive, substring match).
@@ -150,7 +156,7 @@ pii:
 | [toolkit](https://github.com/GaaraZhu/toolkit) | Write operations; credential exposure |
 | **redact** | PII leaking through query results |
 
-`redact`'s config contains no credentials. For production deployments with sensitive credentials, wrap a toolkit-managed client (`tkpsql`/`tkdbr`) — toolkit handles credential injection. For raw clients (`mysql`, `psql`), credentials in standard locations (`.my.cnf`, `.pgpass`, env vars) remain reachable to the AI agent; `redact validate` warns when this is the case.
+`redact`'s config contains no credentials. For production deployments with sensitive credentials, wrap a toolkit-managed client (`tkpsql`/`tkdbr`) — toolkit handles credential injection.
 
 ## Output format
 
