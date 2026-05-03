@@ -6,7 +6,9 @@ Local Postgres setup for testing `redact` end-to-end against real data.
 
 ## Prerequisites
 
-- Docker (with the `docker compose` plugin)
+- Docker runtime and `docker-compose`
+  - **Colima**: `brew install colima docker docker-compose && colima start`
+  - **Docker Desktop**: compose is bundled
 - Rust toolchain (`cargo`)
 - `psql` client (`brew install libpq` on macOS)
 
@@ -78,6 +80,6 @@ All data is synthetic. SSNs use the `000-xx-xxxx` prefix (never issued). Credit 
 ## Tear down
 
 ```sh
-cd dev && docker compose down        # stop, keep data
-cd dev && docker compose down -v     # stop and delete volume
+cd dev && docker-compose down        # stop, keep data
+cd dev && docker-compose down -v     # stop and delete volume
 ```

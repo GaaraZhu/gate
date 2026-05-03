@@ -32,10 +32,15 @@ fn process(stdin: &str, tools: &HashSet<String>) -> Option<String> {
         .ok()
         .filter(|t| !t.is_empty())?;
 
-    let basename = std::path::Path::new(&tokens[0])
+    // Skip leading KEY=value env-var assignments (e.g. PGPASSWORD=x psql ...)
+    let cmd_token = tokens
+        .iter()
+        .find(|t| !t.contains('=') || t.starts_with('-'))?;
+
+    let basename = std::path::Path::new(cmd_token)
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or(&tokens[0])
+        .unwrap_or(cmd_token)
         .to_string();
 
     // Loop avoidance: already routed through redact run
@@ -213,6 +218,37 @@ mod tests {
         // Unclosed quote — shell_words::split will fail → passthrough
         let input = make_input("tkpsql --sql 'unclosed");
         assert!(process(&input, &tools).is_none());
+    }
+
+    #[test]
+    fn env_var_prefix_intercepted() {
+        let tools = default_tools();
+        // PGPASSWORD=x prefix must not prevent psql from being detected
+        let out = process(
+            &make_input("PGPASSWORD=secret psql -c 'SELECT email FROM users'"),
+            &tools,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.starts_with("redact run -- PGPASSWORD=secret psql"));
+    }
+
+    #[test]
+    fn multiple_env_vars_intercepted() {
+        let tools = default_tools();
+        let out = process(
+            &make_input("PGPASSWORD=x PGSSLMODE=require psql -c 'SELECT id FROM t'"),
+            &tools,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.contains("psql"));
     }
 
     #[test]

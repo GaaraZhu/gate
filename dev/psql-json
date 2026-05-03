@@ -9,6 +9,20 @@
 
 set -euo pipefail
 
+# On macOS, libpq is keg-only — psql won't be on PATH unless explicitly linked.
+# Probe the two common Homebrew prefix locations and prepend if found.
+for candidate in /opt/homebrew/opt/libpq/bin /usr/local/opt/libpq/bin; do
+  if [[ -x "$candidate/psql" ]]; then
+    export PATH="$candidate:$PATH"
+    break
+  fi
+done
+
+if ! command -v psql >/dev/null 2>&1; then
+  echo '{"error": "psql not found. Install with: brew install libpq"}'
+  exit 1
+fi
+
 PGHOST="${PGHOST:-localhost}"
 PGPORT="${PGPORT:-5432}"
 PGUSER="${PGUSER:-redact}"

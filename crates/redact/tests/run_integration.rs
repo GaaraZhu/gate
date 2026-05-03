@@ -206,6 +206,31 @@ fn gate1_forced_alias_redacted_by_gate2() {
     assert_eq!(v["contact"], "[PII:email]");
 }
 
+/// Leading KEY=VALUE env-var tokens must be passed to the subprocess, not treated as
+/// the command name (regression: previously caused "No such file or directory" error).
+#[test]
+fn env_var_prefix_passed_to_subprocess() {
+    let dir = tmp();
+    // Tool echoes the value of MY_SECRET so we can assert it was received.
+    let tool = write_script(&dir, "fake-tool", r#"echo "{\"got\":\"$MY_SECRET\"}""#);
+    let config = write_config(&dir, "tools:\n  fake-tool:\n    sql_arg: \"--sql\"\n");
+
+    let out = Command::new(BIN)
+        .arg("run")
+        .arg("--")
+        .arg("MY_SECRET=hunter2")
+        .arg(&tool)
+        .arg("--sql")
+        .arg("SELECT id FROM users")
+        .env("REDACT_CONFIG", &config)
+        .output()
+        .unwrap();
+
+    assert_eq!(exit_code(&out), 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["got"], "hunter2");
+}
+
 /// `--sql=VALUE` form (equals sign) must be parsed correctly by find_flag_value.
 #[test]
 fn sql_flag_equals_form_parsed() {

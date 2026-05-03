@@ -5,6 +5,8 @@
 tools:
   psql-json:
     sql_arg: "--sql"   # Gate 1 will parse this flag's value as SQL
+  psql:
+    sql_arg: "-c"
 
 pii:
   action: redact

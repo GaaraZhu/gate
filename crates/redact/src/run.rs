@@ -17,14 +17,30 @@ pub fn run(args: Vec<String>) {
         )),
     };
 
-    let basename = std::path::Path::new(&args[0])
+    // Split leading KEY=VALUE env-var assignments from the actual command.
+    let env_count = args
+        .iter()
+        .take_while(|t| t.contains('=') && !t.starts_with('-'))
+        .count();
+    let (env_tokens, cmd_args) = args.split_at(env_count);
+
+    if cmd_args.is_empty() {
+        exit_with_error("redact run: no command after env vars. Usage: redact run -- <tool> [args...]");
+    }
+
+    let env_pairs: Vec<(&str, &str)> = env_tokens
+        .iter()
+        .filter_map(|kv| kv.split_once('='))
+        .collect();
+
+    let basename = std::path::Path::new(&cmd_args[0])
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or(args[0].as_str())
+        .unwrap_or(cmd_args[0].as_str())
         .to_string();
 
     // Gate 1: build redact plan from SQL if tool has sql_arg configured
-    let plan = build_gate1_plan(&args, &basename, &config);
+    let plan = build_gate1_plan(cmd_args, &basename, &config);
 
     if plan.rejected {
         exit_with_error(
@@ -35,8 +51,9 @@ pub fn run(args: Vec<String>) {
     }
 
     // Spawn subprocess; stderr passes through unchanged
-    let output = match std::process::Command::new(&args[0])
-        .args(&args[1..])
+    let output = match std::process::Command::new(&cmd_args[0])
+        .args(&cmd_args[1..])
+        .envs(env_pairs)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())

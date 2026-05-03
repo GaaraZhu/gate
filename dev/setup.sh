@@ -6,11 +6,38 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEV="$ROOT/dev"
 BIN="$ROOT/target/release"
 
+# On macOS, libpq is keg-only — add it to PATH if present but not linked.
+for candidate in /opt/homebrew/opt/libpq/bin /usr/local/opt/libpq/bin; do
+  if [[ -x "$candidate/psql" ]]; then
+    export PATH="$candidate:$PATH"
+    break
+  fi
+done
+if ! command -v psql >/dev/null 2>&1; then
+  echo "error: psql not found." >&2
+  echo "       brew install libpq" >&2
+  exit 1
+fi
+
+# Detect the available Docker Compose command (V2 plugin vs standalone binary).
+# With Colima, install the standalone binary: brew install docker-compose
+if docker compose version >/dev/null 2>&1; then
+  DC="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  DC="docker-compose"
+else
+  echo "error: neither 'docker compose' nor 'docker-compose' found." >&2
+  echo "" >&2
+  echo "  Using Colima?  brew install docker-compose" >&2
+  echo "  Using Docker Desktop?  It should be bundled — try reinstalling." >&2
+  exit 1
+fi
+
 echo "==> Starting PostgreSQL..."
-(cd "$DEV" && docker compose up -d)
+(cd "$DEV" && $DC up -d)
 
 echo -n "==> Waiting for PostgreSQL to be ready"
-until (cd "$DEV" && docker compose exec -T postgres \
+until (cd "$DEV" && $DC exec -T postgres \
     pg_isready -U redact -d redact_demo) >/dev/null 2>&1; do
   printf '.'
   sleep 1
