@@ -231,6 +231,57 @@ fn env_var_prefix_passed_to_subprocess() {
     assert_eq!(v["got"], "hunter2");
 }
 
+/// json_tool rewrite: run.rs must spawn the wrapper binary (not the original tool) and
+/// translate the sql_arg flag to --sql. The original tool binary is intentionally absent;
+/// if run.rs mistakenly tries to spawn it, the test fails with ENOENT.
+#[test]
+fn json_tool_binary_spawned_and_sql_arg_translated() {
+    let dir = tmp();
+    let json_wrapper = write_script(
+        &dir,
+        "psql-json",
+        r#"echo '{"rows":[{"id":1,"email":"alice@example.com"}],"count":1}'"#,
+    );
+    let config = write_config(
+        &dir,
+        &format!(
+            "tools:\n  psql:\n    sql_arg: \"-c\"\n    json_tool: \"{json_wrapper}\"\n"
+        ),
+    );
+    // Pass a non-existent psql path — if run.rs spawns it instead of the wrapper, ENOENT.
+    let fake_psql = dir.path().join("psql").to_str().unwrap().to_string();
+    let out = redact_run(&config, &fake_psql, &["-U", "redact", "-c", "SELECT id, email FROM users"]);
+
+    assert_eq!(exit_code(&out), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["rows"][0]["email"], "[PII:email]");
+    assert_eq!(v["rows"][0]["id"], 1);
+    assert_eq!(v["_redact_summary"]["redacted"], 1);
+}
+
+/// json_tool rewrite with equals-form flag (-c=VALUE) must also be translated to --sql=VALUE.
+#[test]
+fn json_tool_equals_form_flag_translated() {
+    let dir = tmp();
+    let json_wrapper = write_script(
+        &dir,
+        "psql-json",
+        r#"echo '{"rows":[{"id":2,"email":"bob@example.com"}],"count":1}'"#,
+    );
+    let config = write_config(
+        &dir,
+        &format!(
+            "tools:\n  psql:\n    sql_arg: \"-c\"\n    json_tool: \"{json_wrapper}\"\n"
+        ),
+    );
+    let fake_psql = dir.path().join("psql").to_str().unwrap().to_string();
+    let out = redact_run(&config, &fake_psql, &["-c=SELECT id, email FROM users"]);
+
+    assert_eq!(exit_code(&out), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["rows"][0]["email"], "[PII:email]");
+}
+
 /// `--sql=VALUE` form (equals sign) must be parsed correctly by find_flag_value.
 #[test]
 fn sql_flag_equals_form_parsed() {

@@ -17,4 +17,4 @@ tools:
 
 pii:
   action: redact
-  wildcard_policy: reject
+  wildcard_policy: warn

@@ -50,9 +50,12 @@ pub fn run(args: Vec<String>) {
         );
     }
 
+    // Resolve json_tool: if the tool has a wrapper, rewrite binary + sql_arg flag.
+    let (spawn_binary, spawn_args) = resolve_spawn_command(cmd_args, &basename, &config);
+
     // Spawn subprocess; stderr passes through unchanged
-    let output = match std::process::Command::new(&cmd_args[0])
-        .args(&cmd_args[1..])
+    let output = match std::process::Command::new(&spawn_binary)
+        .args(&spawn_args)
         .envs(env_pairs)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::piped())
@@ -108,6 +111,41 @@ fn build_gate1_plan(args: &[String], basename: &str, config: &Config) -> RedactP
         &config.pii.wildcard_policy,
         &config.pii.effective_column_names(),
     )
+}
+
+/// If `basename` has a `json_tool` configured, rewrite `cmd_args[0]` to the wrapper binary
+/// and translate its `sql_arg` flag to `--sql`. All other args are preserved unchanged.
+/// Returns `(binary, remaining_args)`.
+fn resolve_spawn_command(
+    cmd_args: &[String],
+    basename: &str,
+    config: &Config,
+) -> (String, Vec<String>) {
+    let Some(tool_cfg) = config.tools.get(basename) else {
+        return (cmd_args[0].clone(), cmd_args[1..].to_vec());
+    };
+    let (Some(json_tool), Some(sql_arg)) = (&tool_cfg.json_tool, &tool_cfg.sql_arg) else {
+        return (cmd_args[0].clone(), cmd_args[1..].to_vec());
+    };
+
+    let eq_prefix = format!("{sql_arg}=");
+    let new_args: Vec<String> = cmd_args
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            if i == 0 {
+                json_tool.clone()
+            } else if t == sql_arg {
+                "--sql".to_string()
+            } else if let Some(val) = t.strip_prefix(&eq_prefix) {
+                format!("--sql={val}")
+            } else {
+                t.clone()
+            }
+        })
+        .collect();
+
+    (new_args[0].clone(), new_args[1..].to_vec())
 }
 
 /// Find the value of `flag` in `args`, supporting both `--flag VALUE` and `--flag=VALUE`.
