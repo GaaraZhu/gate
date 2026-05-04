@@ -5,6 +5,7 @@ mod config_cmd;
 mod enable_disable;
 mod hook;
 mod init;
+mod init_opencode;
 mod list;
 mod run;
 mod starter;
@@ -32,9 +33,12 @@ enum Commands {
     },
     /// Register the PreToolUse hook in the agent harness settings
     Init {
-        /// Target harness (currently only claude-code is supported)
+        /// Target harness: claude-code (default) or opencode
         #[arg(long, default_value = "claude-code")]
         harness: String,
+        /// Installation scope for opencode: global (default) or project
+        #[arg(long, default_value = "global")]
+        scope: String,
     },
     /// Manage the redact config file
     Config {
@@ -65,7 +69,7 @@ fn main() {
     match cli.command {
         Commands::Hook => hook::run(),
         Commands::Run { args } => run::run(args),
-        Commands::Init { harness } => init::run(&harness),
+        Commands::Init { harness, scope } => init::run(&harness, &scope),
         Commands::Config {
             path,
             print,

@@ -5,24 +5,27 @@ use std::path::{Path, PathBuf};
 
 const HOOK_COMMAND: &str = "redact hook";
 
-pub fn run(harness: &str) {
+pub fn run(harness: &str, scope: &str) {
     if is_agent_harness() {
         exit_with_error(
             "redact init is not available inside an agent harness. \
              Run `redact init` in a terminal session outside the agent.",
         );
     }
-    if harness != "claude-code" {
-        exit_with_error(&format!(
-            "unsupported harness '{harness}'; only claude-code is supported in v1. \
-             Usage: redact init --harness claude-code"
-        ));
+    match harness {
+        "claude-code" => {
+            let path = match claude_settings_path() {
+                Ok(p) => p,
+                Err(e) => exit_with_error(&format!("cannot resolve settings path: {e}")),
+            };
+            run_with_path(&path);
+        }
+        "opencode" => crate::init_opencode::run(scope),
+        _ => exit_with_error(&format!(
+            "unsupported harness '{harness}'; supported: claude-code, opencode. \
+             Usage: redact init --harness <harness>"
+        )),
     }
-    let path = match claude_settings_path() {
-        Ok(p) => p,
-        Err(e) => exit_with_error(&format!("cannot resolve settings path: {e}")),
-    };
-    run_with_path(&path);
 }
 
 fn run_with_path(path: &Path) {
@@ -121,7 +124,7 @@ fn has_exact_hook(arr: &[Value]) -> bool {
     })
 }
 
-fn entry_has_redact_hook(entry: &Value) -> bool {
+pub(crate) fn entry_has_redact_hook(entry: &Value) -> bool {
     entry
         .get("hooks")
         .and_then(|h| h.as_array())

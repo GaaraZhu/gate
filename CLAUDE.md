@@ -10,8 +10,8 @@ PII-filtering CLI that transparently intercepts AI agent query commands and reda
 
 ## Current step
 
-Milestone: Milestone 8 — opencode support
-Step: 49 (next — extend `--harness` enum to accept `opencode`)
+Milestone: Milestone 9 — GitHub Copilot CLI (DEFERRED)
+Step: 58 (next if picked up — format detection in hook.rs)
 
 Status:
 - [x] Prototype complete
@@ -21,7 +21,7 @@ Status:
 - [x] Milestone 4 complete (redact run pipeline + integration tests — 119 tests pass)
 - [x] Milestone 5 complete (hook config-driven + init + config_cmd + list + validate — 154 tests pass)
 - [x] Milestone 6 complete (README, error audit, criterion benchmark 25ms<100ms NFR, smoke test)
-- [ ] Milestone 8 — opencode: `tool.execute.before` plugin (enforcing rewrite) + `redact init --harness opencode`
+- [x] Milestone 8 complete (opencode: `tool.execute.before` plugin + `redact init --harness opencode` + validate harness detection — 212 tests pass)
 - [ ] Milestone 9 — GitHub Copilot CLI: **DEFERRED** to a future release. Spec retained in `docs/plan.md`. Reason: Copilot CLI's `preToolUse` hook only supports deny-with-suggestion (advisory enforcement); we'll revisit when it gains a transparent-rewrite contract.
 
 Notes:

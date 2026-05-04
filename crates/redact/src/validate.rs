@@ -3,6 +3,7 @@ use common::error::exit_with_error;
 use common::patterns::BUILTIN_PATTERNS;
 use regex::Regex;
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 const RAW_CLIENTS: &[&str] = &["mysql", "psql"];
 
@@ -67,6 +68,66 @@ pub fn run() {
             eprintln!("error: {e}");
         }
         std::process::exit(1);
+    }
+
+    println!();
+    report_harness_installations();
+}
+
+fn report_harness_installations() {
+    let mut found: Vec<String> = Vec::new();
+
+    // Claude Code
+    if let Ok(home) = std::env::var("HOME") {
+        let path = PathBuf::from(&home).join(".claude/settings.json");
+        if path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    if v["hooks"]["PreToolUse"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .any(crate::init::entry_has_redact_hook)
+                        })
+                        .unwrap_or(false)
+                    {
+                        found.push(format!("Claude Code ({})", path.display()));
+                    }
+                }
+            }
+        }
+    }
+
+    // opencode global
+    if let Ok(home) = std::env::var("HOME") {
+        let path = PathBuf::from(&home).join(".config/opencode/plugin/redact.ts");
+        if path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                if crate::init_opencode::has_redact_header(&contents) {
+                    found.push(format!("opencode ({})", path.display()));
+                }
+            }
+        }
+    }
+
+    // opencode project
+    let project_path = PathBuf::from(".opencode/plugin/redact.ts");
+    if project_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&project_path) {
+            if crate::init_opencode::has_redact_header(&contents) {
+                found.push("opencode (.opencode/plugin/redact.ts)".to_string());
+            }
+        }
+    }
+
+    if found.is_empty() {
+        println!("No harness integrations detected.");
+        println!("Run `redact init` (Claude Code) or `redact init --harness opencode` to install.");
+    } else {
+        println!("Installed harness integrations:");
+        for h in &found {
+            println!("  - {h}");
+        }
     }
 }
 
