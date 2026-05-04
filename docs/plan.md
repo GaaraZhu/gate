@@ -397,6 +397,307 @@ Skip conditions (return `Skip` with reason):
 
 ---
 
+## Milestone 8 — GitHub Copilot CLI support
+
+> **Status: DEFERRED to a future release.** The full spec below is retained for when we revisit. Reason for deferral: Copilot CLI's `preToolUse` hook contract only supports deny-with-suggestion, not transparent rewrite, so the integration is *advisory* — strictly safer than no hook, but the AI could ignore the suggestion. We're waiting for either (a) Copilot CLI to gain an `updatedInput` equivalent, or (b) clear user demand that justifies shipping the advisory-only mode. Milestone 9 (opencode) ships first because opencode's plugin contract supports enforcing rewrite. When Copilot CLI is picked up again, renumber as needed and re-validate the schema against the current `https://docs.github.com/en/copilot/reference/hooks-configuration` (it may have drifted).
+
+**Motivation.** Today `redact hook` only understands Claude Code's snake_case PreToolUse JSON shape and only emits `updatedInput`-style transparent rewrites. Users running GitHub Copilot CLI get no protection — Copilot CLI ships its own PreToolUse hook contract with a different wire format (camelCase `toolName` / `toolArgs`-as-JSON-string) and, critically, does **not** support `updatedInput`. The fallback that works on Copilot CLI is **deny-with-suggestion**: the hook returns `permissionDecision: "deny"` with a reason that names the safe replacement, and the AI retries with that command. Pattern lifted directly from rtk's `src/hooks/hook_cmd.rs::run_copilot` (dual format detection + dual response).
+
+This milestone adds Copilot CLI support without disturbing the Claude Code path: same binary, same decision pipeline, format detection at the boundary, dual response writers. It also adds `redact init --harness copilot-cli` to write the project-scoped hook config and an instructions snippet that materially raises Copilot's compliance with the deny-and-retry suggestion. VS Code Copilot Chat uses the same snake_case format as Claude Code, so it works automatically once the user wires the hook in their VS Code settings — no extra `init` mode needed in v1.
+
+**Non-goal:** Cursor, Gemini CLI, OpenCode (still deferred). And a v1 Copilot CLI integration is **advisory**, not enforcing — see requirements.md "Enforcement strength varies by harness". This is acceptable because it strictly improves on the unhooked baseline (the original PII-leaking command is denied) and pairs the runtime hook with an `.github/copilot-instructions.md` block telling Copilot to honour the suggestion.
+
+### Part A — Format detection and dual response in `redact hook`
+
+**Step 49. Introduce `HookFormat` at the top of `process()` in `crates/redact/src/hook.rs`.**
+
+```rust
+enum HookFormat {
+    ClaudeOrVsCode,      // snake_case tool_name / tool_input.command
+    CopilotCli,          // camelCase toolName / toolArgs (JSON-encoded string)
+}
+fn detect_format(v: &serde_json::Value) -> Option<HookFormat>;
+```
+
+Detection rules (mirroring rtk):
+
+- `tool_name` present (snake_case) → `ClaudeOrVsCode`. Accept `tool_name` values `Bash` or `bash`. Read the command from `tool_input.command`.
+- `toolName` present (camelCase) → `CopilotCli`. Accept `toolName` value `bash`. Parse `toolArgs` as a JSON string (it's encoded as a string by Copilot CLI), then read `command` from the resulting object.
+- Neither → return `None` and passthrough.
+
+Reject anything that isn't a Bash invocation early — both formats may carry other tool names (`editFiles`, `runTerminalCommand`, etc.); `runTerminalCommand` from VS Code can be opportunistically accepted too if testing shows it appears in practice (rtk does).
+
+**Step 50. Refactor `process()` so the decision pipeline is shape-agnostic.**
+
+The existing token-walking + tool-match + json_tool rewrite + loop-avoidance logic does not change. Only the input extraction and output emission are branched. Suggested shape:
+
+```rust
+fn process(stdin: &str, config: &Config) -> Option<String> {
+    if !config.enabled || is_disabled_by_env() { return None; }
+    let v: Value = serde_json::from_str(stdin).ok()?;
+    let format = detect_format(&v)?;
+    let original_command = extract_command(&v, format)?;
+    let new_command = rewrite_command(&original_command, config)?;  // existing logic
+    Some(emit_response(format, new_command))
+}
+```
+
+`emit_response` produces the existing `hookSpecificOutput.updatedInput` JSON for `ClaudeOrVsCode`, and the new `permissionDecision: "deny"` + reason JSON for `CopilotCli`.
+
+**Step 51. Copilot CLI deny reason text.** Format: `PII safety: run \`<new_command>\` instead`. The leading `PII safety:` substring is the anchor that the `copilot-instructions.md` snippet (Step 54) tells Copilot to recognise; do not change this prefix without updating the instructions.
+
+**Step 52. Tests.** Extend `crates/redact/src/hook.rs` `mod tests` with a `mod copilot_cli` block covering:
+
+- detect_format: snake_case / camelCase / unknown / `tool_name` non-Bash / `toolName` non-bash / `toolArgs` malformed JSON.
+- Intercept paths produce the right shape per format (assert `permissionDecision == "deny"` and reason contains `redact run --` for Copilot, `permissionDecision == "allow"` and `updatedInput.command` starts with `redact run --` for Claude).
+- Passthrough conditions (config disabled, env-disabled, loop avoidance, tool not in config, malformed JSON) all return `None` regardless of format.
+- Same payload sent in both formats produces semantically equivalent rewrites of the same command.
+
+### Part B — `redact init --harness copilot-cli`
+
+**Step 53. CLI surface.** Extend the `--harness` clap value enum to include `copilot-cli`. Dispatch in `init.rs::run` to a new `init_copilot::run()`. Keep the existing `is_agent_harness()` gate (init is blocked inside any harness).
+
+**Step 54. `init_copilot::run` writes two files in the current working directory:**
+
+1. `./.github/hooks/hooks.json` — project-scoped hook config (Copilot CLI loads hooks from the directory it launches in; the GitHub-recommended layout is `.github/hooks/hooks.json`). Schema follows [GitHub's hooks reference](https://docs.github.com/en/copilot/reference/hooks-configuration):
+   ```json
+   {
+     "version": 1,
+     "hooks": {
+       "preToolUse": [
+         {
+           "type": "command",
+           "bash": "redact hook",
+           "cwd": ".",
+           "timeoutSec": 5
+         }
+       ]
+     }
+   }
+   ```
+   Note the lowerCamelCase event name (`preToolUse`, not Claude's `PreToolUse`), the `bash` script field (not `command`), and `timeoutSec` (not `timeout`). Write atomically (tempfile + rename) into `.github/hooks/`, creating directories as needed.
+
+   Idempotency rules:
+   - If `hooks.json` does not exist → create it with the JSON above.
+   - If it exists and already contains a `preToolUse` array entry whose `bash` field equals `"redact hook"` (or matches the `redact hook` basename pattern, mirroring `init.rs::is_redact_hook_variant`) → skip and print "already installed".
+   - If it exists with other unrelated entries (the user has hand-curated hooks) → merge: append a new entry to `preToolUse` without disturbing other event arrays. Replace any pre-existing `redact hook` variant in place rather than duplicating.
+   - The top-level `version: 1` field is preserved if present and inserted otherwise.
+
+2. `.github/copilot-instructions.md` — upsert an anchor block:
+   ```markdown
+   <!-- redact:begin -->
+   ## redact (PII safety hook)
+
+   When a command is denied with a `permissionDecisionReason` starting with
+   `PII safety:`, re-run with the exact command shown in backticks in that
+   reason. Do not paraphrase or alter the suggested command — it routes the
+   query through `redact run`, which redacts PII before returning results.
+   <!-- redact:end -->
+   ```
+   Behaviour:
+   - File missing → create with just this block.
+   - File exists, anchor block present → replace contents between `<!-- redact:begin -->` and `<!-- redact:end -->` (preserves any user content outside the block).
+   - File exists, anchor block absent → append `\n\n<block>\n` at the end.
+   - Atomic write (tempfile + rename), same as `init.rs::write_atomic`.
+
+**Step 55. Print the next-step hint.** After writing both files, print:
+```
+redact: GitHub Copilot CLI integration installed (project-scoped).
+  Hook config:    .github/hooks/hooks.json   (preToolUse entry added)
+  Instructions:   .github/copilot-instructions.md (redact block)
+
+  Note: Copilot CLI uses deny-with-suggestion (the AI is asked to re-run
+  with the redact-prefixed command). Compliance is improved by the
+  copilot-instructions.md block above.
+
+  Restart your Copilot CLI session to activate.
+```
+
+**Step 56. Tests.** In `crates/redact/src/init_copilot.rs` `mod tests`:
+
+- Creates both files in a tempdir; content matches expected JSON / markdown exactly.
+- Idempotent: running twice produces no duplicate anchor blocks; second run prints "already installed" or "no changes".
+- Anchor-block upsert: pre-existing `copilot-instructions.md` with unrelated content keeps that content intact; the redact block is inserted/replaced cleanly.
+- Atomic write: a write that fails mid-flight does not leave a corrupt file (assert no `.redact_tmp` file is left behind on success path).
+
+### Part C — Docs and validate
+
+**Step 57. `validate` reports installed harnesses.** When `redact validate` runs, additionally report which harness integrations appear installed (Claude: `~/.claude/settings.json` contains a `redact hook` PascalCase `PreToolUse` entry; Copilot: `./.github/hooks/hooks.json` exists in the cwd with a lowerCamelCase `preToolUse` `redact hook` entry). Read-only check, surfaced at the end of validate's existing output. No exit-code change.
+
+**Step 58. README + docs migration.**
+
+- `README.md` Installation section: split into two tabs (or two adjacent code blocks): "Claude Code" (`redact init`) and "GitHub Copilot CLI" (`redact init --harness copilot-cli`, run from the project root). Add a one-paragraph callout naming the deny-with-suggestion limitation.
+- `README.md` Commands table: update `redact init` row to `redact init [--harness claude-code|copilot-cli]`.
+- `docs/design.md` already updated in this milestone (per-harness installation surface, dual-format hook contract).
+- `docs/requirements.md` already updated in this milestone (FR-2, FR-2a, "Enforcement strength varies by harness").
+- `CLAUDE.md` Non-negotiables: add "Hook output format must match the detected input format. The Copilot CLI deny reason **must** start with the literal prefix `PII safety:` — the instructions snippet keys off this anchor."
+
+### Risks and mitigations specific to Milestone 8
+
+1. **Copilot may not honour the deny suggestion.** Mitigation: instructions snippet anchored on `PII safety:` raises compliance; document the advisory-not-enforcing limitation in three places (requirements, design, README); revisit if Copilot CLI gains an `updatedInput` equivalent.
+2. **Format detection ambiguity.** A malformed message could carry both `tool_name` and `toolName`. Mitigation: `tool_name` wins (Claude/VS Code shape). Pin in tests.
+3. **`toolArgs` JSON-string parsing failures.** Copilot CLI sends a string-encoded JSON object. If parsing fails, treat as passthrough (exit 0, no output). Test with malformed strings.
+4. **Project-scoped hook leaks across repos.** `.github/hooks/hooks.json` lives in the user's repo; if the user enables redact in a public repo and pushes, downstream users get the hook. Mitigation: README install section calls this out and recommends `.gitignore`-ing the file when it shouldn't be committed.
+6. **Schema drift from rtk's docs.** rtk's source uses Claude's PascalCase `PreToolUse` and a flat `command` field for its Copilot install — that does not match Copilot CLI's official schema (`preToolUse`, `bash`/`powershell`, `timeoutSec`, top-level `version: 1`). VS Code's hook host normalises both, but Copilot CLI does not — pin tests against the official schema, not against rtk's emitted JSON.
+5. **Anchor-block parser corruption.** A file with one anchor but not the other could be misparsed. Mitigation: require both `<!-- redact:begin -->` and `<!-- redact:end -->`; if only one is present, treat as "no anchor" and append a fresh block (the user can clean up).
+
+### Effort estimate
+
+1.5 working days. Part A (format detection + dual emit + tests) is ~half a day — the existing decision pipeline doesn't change, only its bookends. Part B (init_copilot module + atomic upsert + tests) is ~half a day. Part C (validate signal + README/CLAUDE.md migration) is ~half a day.
+
+### Exit criterion
+
+End-to-end: in a project with `./.github/hooks/hooks.json` installed by `redact init --harness copilot-cli` (top-level `version: 1`, `hooks.preToolUse[]` containing the `bash: "redact hook"` + `timeoutSec: 5` entry), simulate a Copilot CLI hook invocation by piping the camelCase JSON shape into `redact hook`, observe a `permissionDecision: "deny"` response whose reason contains `redact run --` followed by the original command. The Claude Code golden cases continue to pass unchanged. `redact validate` reports both integration sites when both are installed.
+
+---
+
+## Milestone 9 — opencode support
+
+**Motivation.** opencode (`sst/opencode`) is a popular open-source AI coding agent. Its plugin system exposes a `tool.execute.before(input, output)` hook whose `output.args` is mutable — mutating `output.args.command` for the bash tool propagates to the actual subprocess opencode runs. That gives us the same **enforcing** guarantee Claude Code provides (the AI cannot opt out of the rewrite), unlike Copilot CLI's deny-with-suggestion. The hook signature is canonical (verified in `sst/opencode:packages/plugin/src/index.ts`):
+
+```typescript
+"tool.execute.before"?: (
+  input: { tool: string; sessionID: string; callID: string },
+  output: { args: any },
+) => Promise<void>
+```
+
+Bash-tool args shape (`packages/opencode/src/tool/shell/prompt.ts`): `{ command: string, timeout?, workdir?, description }`.
+
+**Design.** No changes to the Rust `redact hook` contract. The opencode integration ships as a small TypeScript plugin file that:
+1. Returns early if `input.tool !== "bash"`.
+2. Synchronously spawns `redact hook`, piping snake_case JSON `{"tool_name":"Bash","tool_input":{"command":<cmd>}}` to stdin (the format `redact hook` already understands — Claude Code shape).
+3. If stdout is non-empty, parses it as JSON, extracts `hookSpecificOutput.updatedInput.command`, and assigns it to `output.args.command`.
+4. If stdout is empty, leaves `output.args.command` unchanged (passthrough — same convention as Claude Code).
+
+This keeps the format-detection surface in `redact hook` to one shape (no opencode-specific Rust path), localises the opencode-specific glue in the plugin file, and reuses the existing `process()` decision pipeline verbatim.
+
+**Non-goal:** Cursor, Gemini CLI, Aider — still deferred. The Copilot CLI work in Milestone 8 stays deferred.
+
+### Part A — `redact init --harness opencode`
+
+**Step 49. Extend the `--harness` clap value enum to include `opencode`.** Wire dispatch in `crates/redact/src/init.rs::run` to a new module `init_opencode::run()`. Keep the existing `is_agent_harness()` gate at the top of `init.rs::run` — opencode sets `OPENCODE`, so init is correctly blocked inside an opencode session (already verified in `crates/common/src/harness.rs:1`).
+
+**Step 50. `init_opencode::run` writes a single plugin file.**
+
+Default location: `~/.config/opencode/plugin/redact.ts` (global, mirroring the user-scope of `~/.claude/settings.json` for Claude Code). opencode loads plugins from this directory automatically; no settings-file edit is required.
+
+Add a `--scope project|global` flag (default `global`) so users can opt into project-scoped install at `./.opencode/plugin/redact.ts` instead. Project scope is useful when the user doesn't want every opencode session globally redacted (e.g. they only want it for one repo); global scope matches Claude Code's behaviour and is the recommended default.
+
+Plugin contents (sketch — pin exactly in code, target ~40 lines):
+
+```typescript
+// .opencode/plugin/redact.ts (or ~/.config/opencode/plugin/redact.ts)
+// Generated by `redact init --harness opencode`. Safe to delete.
+import { spawnSync } from "node:child_process"
+
+export const RedactPlugin = async () => ({
+  "tool.execute.before": async (
+    input: { tool: string },
+    output: { args: { command?: string } },
+  ) => {
+    if (input.tool !== "bash") return
+    const cmd = output.args.command
+    if (typeof cmd !== "string" || cmd.length === 0) return
+
+    const payload = JSON.stringify({
+      tool_name: "Bash",
+      tool_input: { command: cmd },
+    })
+    const result = spawnSync("redact", ["hook"], {
+      input: payload,
+      encoding: "utf8",
+      timeout: 5000,
+    })
+    if (result.status !== 0 || !result.stdout) return  // passthrough
+    try {
+      const parsed = JSON.parse(result.stdout)
+      const updated = parsed?.hookSpecificOutput?.updatedInput?.command
+      if (typeof updated === "string" && updated.length > 0) {
+        output.args.command = updated
+      }
+    } catch {
+      // malformed response — fail open to passthrough; never block the user
+    }
+  },
+})
+```
+
+Atomic write (tempfile + rename, same helper as `init.rs::write_atomic`). Create parent directories as needed.
+
+Idempotency rules:
+- File missing → write fresh.
+- File exists with byte-identical contents → skip; print `redact opencode plugin already installed at <path>`.
+- File exists with a recognisable redact header (the first comment line above) → overwrite (treat as upgrade — matches `init.rs`'s "redact hook variant" replacement behaviour).
+- File exists without the redact header → refuse to overwrite; print an error pointing the user to delete or rename the existing file. (Avoid clobbering a user-authored plugin that happens to share the filename.)
+
+**Step 51. Print the next-step hint.** After the write, print:
+
+```
+redact: opencode integration installed.
+  Plugin:   ~/.config/opencode/plugin/redact.ts        (global scope)
+            (use --scope project for ./.opencode/plugin/redact.ts)
+
+  Restart your opencode session to load the plugin.
+  Run `redact config` to define which tools to intercept.
+```
+
+**Step 52. Tests** in `crates/redact/src/init_opencode.rs` `mod tests`:
+
+- Tempdir-controlled `HOME` and project root: writes file at expected path, contents match the embedded template byte-for-byte.
+- `--scope project` writes `./.opencode/plugin/redact.ts`; `--scope global` (default) writes the user-config path.
+- Idempotent: running twice with the redact header yields one write + one "already installed" report; no duplicate file or trailing tempfile.
+- Clobber guard: pre-existing `redact.ts` without the redact header causes an error and no write.
+- The harness gate from `init.rs::run` still fires when `OPENCODE` is set (regression — guard-by-default also covers opencode).
+
+### Part B — Hook reuse and end-to-end shim
+
+**Step 53. No changes to `crates/redact/src/hook.rs`.** The opencode plugin sends snake_case JSON, so the existing `process()` path at `crates/redact/src/hook.rs:26` handles it identically to Claude Code. Add a comment at the top of `hook.rs` noting that the snake_case shape is the canonical input for both Claude Code (sent directly by the harness) and opencode (sent by the bundled plugin file).
+
+**Step 54. Integration smoke test.** A new integration test in `crates/redact/tests/` that:
+1. Reads the embedded plugin TS template (compile-time `include_str!`).
+2. Asserts the plugin's payload format matches what `hook::process()` expects: parse the embedded TS, extract the JSON template from the `JSON.stringify(...)` call, and assert it round-trips through `process()` with a known intercept-eligible command.
+
+This is a contract test between the JS template and the Rust hook — if either side drifts, the test fails. Cheaper than wiring an actual opencode runtime in CI.
+
+### Part C — validate, config, docs
+
+**Step 55. `validate` reports installed harness integrations.** Extend the existing `validate.rs` end-of-output section: detect Claude Code (`~/.claude/settings.json` with a `redact hook` `PreToolUse` entry) AND opencode (`~/.config/opencode/plugin/redact.ts` exists with the redact header, OR `./.opencode/plugin/redact.ts` exists in cwd). Read-only check, no exit-code change. (When Milestone 8 ships, the same surface absorbs the Copilot CLI check.)
+
+**Step 56. Starter config unchanged.** opencode reuses every tool entry from `~/.config/redact/config.yaml` — there is no per-harness config split. Verify with a manual smoke test that `tkpsql` interception works the same way under opencode as under Claude Code.
+
+**Step 57. Docs.**
+
+- `README.md` Installation: promote opencode from "Roadmap" to a second supported-harness block alongside Claude Code. Note that the integration is enforcing (transparent rewrite via plugin mutation of `output.args.command`).
+- `README.md` Commands table: update `redact init` row to `redact init [--harness claude-code|opencode] [--scope project|global]`.
+- `docs/design.md` per-harness installation surface table: add an opencode row pointing at the plugin file path; update the "Single binary, dual contract" section to clarify opencode reuses the snake_case shape via the plugin glue (one Rust contract, two harnesses).
+- `docs/requirements.md` FR-2 / FR-2a / FR-2c / Enforcement table: add opencode as Enforcing alongside Claude Code; explicitly call out the install model (plugin file vs settings entry).
+- `CLAUDE.md` Non-negotiables: extend the "Hook output format" item to note that opencode also speaks the snake_case shape via its bundled plugin (no Rust-side format change).
+
+### Risks specific to Milestone 9
+
+1. **opencode plugin API changes.** The hook signature is documented but not stabilised on a versioning policy. Mitigation: pin a minimum opencode version in the README install block; add a one-line "tested with opencode vX.Y" note at the top of the embedded plugin template; the contract test (Step 54) catches drift between the plugin and `hook.rs`.
+
+2. **`spawnSync` on every bash command adds latency.** Each bash tool call now forks a `redact` process. With config caching (already in place — see Milestone 5 Step 24's mtime cache discussion), single-digit ms is the target. Mitigation: add a benchmark in the contract test asserting the round-trip is <50ms p99 on a warm cache.
+
+3. **Bun vs Node runtime differences in the plugin.** opencode runs on Bun. `node:child_process.spawnSync` works under Bun but `Bun.spawnSync` is the more idiomatic API. Choosing `node:child_process` keeps the plugin portable if opencode ever moves off Bun. Pin the choice in code with a comment.
+
+4. **`--scope global` collides between opencode versions / projects.** A user installing the plugin globally then opening a different project still gets PII filtering. This is a feature — global means global. But document explicitly: users who want per-project scoping must use `--scope project`. Worth a one-paragraph callout in the README.
+
+5. **Plugin file accidentally checked into a public repo (project scope).** Same risk Milestone 8 flagged for `.github/hooks/hooks.json`. Mitigation: same — README install section recommends `.gitignore`-ing `.opencode/plugin/redact.ts` if the repo is public.
+
+6. **`output.args.command` mutation may be ignored if opencode's plugin contract changes.** Mitigation: smoke test the actual mutation against a real opencode binary at release time (not in CI — opencode is heavy to install). Document the contract dependency in `docs/design.md`.
+
+### Effort estimate
+
+1 working day. Part A (clap enum + `init_opencode.rs` + idempotent write + tests) is ~half a day. Part B (template wiring + contract test, no `hook.rs` changes) is a couple of hours. Part C (validate signal + README/design/requirements/CLAUDE.md migration) is ~quarter of a day.
+
+### Exit criterion
+
+End-to-end: with `~/.config/opencode/plugin/redact.ts` installed by `redact init --harness opencode`, start an opencode session, ask the AI to run `tkpsql query --sql "SELECT email FROM users"`, observe the bash tool actually executes `redact run -- tkpsql query --sql "..."` and the AI sees `[PII:email]` in the result. Claude Code golden cases continue to pass unchanged. `redact validate` reports both integration sites when both are installed.
+
+---
+
 ## Critical files to write or carefully shape
 
 | File | Why critical |
