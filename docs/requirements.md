@@ -64,9 +64,9 @@ AI coding agents querying production datastores can inadvertently exfiltrate PII
 | Harness | Mechanism | Guarantee | Status |
 |---|---|---|---|
 | Claude Code | `updatedInput` rewrite | **Enforcing** — the AI cannot opt out; the rewritten command is what the harness runs | Shipped |
-| opencode | `tool.execute.before` plugin mutates `output.args.command` | **Enforcing** — same guarantee as Claude Code; the plugin rewrites the bash tool's args before the subprocess spawns | Planned (Milestone 9) |
+| opencode | `tool.execute.before` plugin mutates `output.args.command` | **Enforcing** — same guarantee as Claude Code; the plugin rewrites the bash tool's args before the subprocess spawns | Planned (Milestone 8) |
 | VS Code Copilot Chat | `updatedInput` rewrite | **Enforcing** | Compatible by reusing the snake_case shape; user wires the hook in their VS Code settings (no `redact init` mode in v1) |
-| GitHub Copilot CLI | `permissionDecision: deny` + suggestion | **Advisory** — Copilot CLI's API does not support rewrite; the AI is denied and asked to retry with the suggested command. It may comply, abandon the query, or attempt a workaround | **Deferred** (Milestone 8 spec retained in plan.md) |
+| GitHub Copilot CLI | `permissionDecision: deny` + suggestion | **Advisory** — Copilot CLI's API does not support rewrite; the AI is denied and asked to retry with the suggested command. It may comply, abandon the query, or attempt a workaround | **Deferred** (Milestone 9 spec retained in plan.md) |
 
 Copilot CLI is deferred to a future release. Reason: deny-with-suggestion is materially weaker than transparent rewrite — strictly safer than no hook, but the AI could ignore the suggestion. We're holding the integration until either Copilot CLI gains an `updatedInput`-equivalent (in which case `redact hook` should switch to that path automatically) or user demand justifies shipping the advisory-only mode. Until then, the documented enforcement story is uniformly "enforcing".
 
@@ -89,7 +89,7 @@ Copilot CLI is deferred to a future release. Reason: deny-with-suggestion is mat
 - Supported harnesses:
   - `claude-code` — writes a `PreToolUse` entry into `~/.claude/settings.json` registering `redact hook` against the `Bash` matcher. **Shipped.**
   - `opencode` — writes a TypeScript plugin file at `~/.config/opencode/plugin/redact.ts` (or `./.opencode/plugin/redact.ts` with `--scope project`). The plugin's `tool.execute.before` hook mutates `output.args.command` to the rewritten value, giving an enforcing guarantee equivalent to Claude Code. **Planned — Milestone 9.**
-  - `copilot-cli` — writes a project-scoped `preToolUse` hook config and a `.github/copilot-instructions.md` snippet. **Deferred to a future release** (advisory enforcement only — see Security Model). Spec retained in `docs/plan.md` Milestone 8.
+  - `copilot-cli` — writes a project-scoped `preToolUse` hook config and a `.github/copilot-instructions.md` snippet. **Deferred to a future release** (advisory enforcement only — see Security Model). Spec retained in `docs/plan.md` Milestone 9.
 - Other harnesses (Cursor, Gemini CLI, Aider) remain out of scope.
 - `redact init` is idempotent for every supported harness: re-running detects an existing hook entry and skips or upgrades it; never duplicates. For `opencode`, the plugin file is overwritten in place when its leading redact header is present (treated as upgrade) and refused when the header is absent (avoids clobbering a user-authored file with the same name).
 
@@ -97,14 +97,14 @@ Copilot CLI is deferred to a future release. Reason: deny-with-suggestion is mat
 
 - Implements the calling harness's PreToolUse callback contract. Reads the about-to-run command from stdin as JSON, decides intercept vs. passthrough, and emits a harness-appropriate JSON response (or no output for passthrough).
 - **Input format.** v1 supports a single on-the-wire shape — the snake_case PreToolUse JSON used by Claude Code and VS Code Copilot Chat: `{"tool_name":"Bash","tool_input":{"command":"..."}}`. Extracts `tool_input.command`. Any other shape: passthrough.
-- **opencode reuses the same shape via a bundled plugin** (Milestone 9). The plugin file `redact init --harness opencode` writes runs inside opencode's TypeScript plugin runtime, formats the bash tool's args as snake_case JSON, pipes them to `redact hook`, then mutates `output.args.command` from the response. From `redact hook`'s point of view there is exactly one input shape; the per-harness translation lives in the plugin glue.
+- **opencode reuses the same shape via a bundled plugin** (Milestone 8). The plugin file `redact init --harness opencode` writes runs inside opencode's TypeScript plugin runtime, formats the bash tool's args as snake_case JSON, pipes them to `redact hook`, then mutates `output.args.command` from the response. From `redact hook`'s point of view there is exactly one input shape; the per-harness translation lives in the plugin glue.
 - **Decision logic** (independent of harness once the command string is extracted):
   1. Parse the command line; extract the configured tool token (basename).
   2. If the tool basename is not a key in `tools:`, passthrough.
   3. If the command is already prefixed with `redact run`, passthrough (loop avoidance).
   4. Otherwise, build the rewritten command string `redact run -- <original command>`.
 - **Output format:** emit `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"redact run -- ..."}}}`. Both Claude Code (directly) and the opencode plugin (which extracts `hookSpecificOutput.updatedInput.command` and assigns it to `output.args.command`) consume this shape.
-- **Copilot CLI's camelCase deny-with-suggestion shape is specced in `docs/plan.md` Milestone 8 but deferred** — see Security Model for why the advisory model is held back.
+- **Copilot CLI's camelCase deny-with-suggestion shape is specced in `docs/plan.md` Milestone 9 but deferred** — see Security Model for why the advisory model is held back.
 - **Passthrough path** writes nothing to stdout and exits 0; every harness treats no-output-from-hook as "run the original command unchanged".
 - Must be fast on the passthrough path (single-digit ms) since it runs on every Bash command.
 
