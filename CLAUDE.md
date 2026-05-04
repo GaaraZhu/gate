@@ -10,8 +10,8 @@ PII-filtering CLI that transparently intercepts AI agent query commands and reda
 
 ## Current step
 
-Milestone: Milestone 6 — Polish & ship
-Step: 31–35 (complete — pending tag)
+Milestone: Milestone 9 — opencode support
+Step: 49 (next — extend `--harness` enum to accept `opencode`)
 
 Status:
 - [x] Prototype complete
@@ -21,6 +21,8 @@ Status:
 - [x] Milestone 4 complete (redact run pipeline + integration tests — 119 tests pass)
 - [x] Milestone 5 complete (hook config-driven + init + config_cmd + list + validate — 154 tests pass)
 - [x] Milestone 6 complete (README, error audit, criterion benchmark 25ms<100ms NFR, smoke test)
+- [ ] Milestone 8 — GitHub Copilot CLI: **DEFERRED** to a future release. Spec retained in `docs/plan.md`. Reason: Copilot CLI's `preToolUse` hook only supports deny-with-suggestion (advisory enforcement); we'll revisit when it gains a transparent-rewrite contract.
+- [ ] Milestone 9 — opencode: `tool.execute.before` plugin (enforcing rewrite) + `redact init --harness opencode`
 
 Notes:
 `crates/redact/src/run.rs` is the production Gate 1 + Gate 2 pipeline. Loads config,
@@ -97,6 +99,7 @@ Do not advance the "Current step" in this file until all four items are checked.
 - **`redact init` and interactive `redact config` are blocked inside agent harnesses.** Check `is_agent_harness()` at the top of those handlers.
 - **`redact hook` must be fast on the passthrough path** — single-digit ms. It fires on every Bash command.
 - **Errors use `{"error": "..."}` format with exit code 1**, matching toolkit convention.
+- **Hook output format must match the detected input format.** Today only the snake_case Claude Code shape is implemented (`hookSpecificOutput.updatedInput`). When opencode lands (Milestone 9), the snake_case shape is reused — the opencode plugin formats its payload as snake_case before piping to `redact hook`, so the Rust side stays single-format. Copilot CLI's camelCase deny-with-suggestion shape is specced in `docs/plan.md` Milestone 8 but deferred.
 
 ## Key invariants by file
 

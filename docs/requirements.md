@@ -57,6 +57,19 @@ AI coding agents querying production datastores can inadvertently exfiltrate PII
 - For raw-client wrapping (e.g. `mysql`), users accept that credentials in any location the tool reads are reachable by the AI. This is acceptable when the credential is low-sensitivity (read-only DB user, local dev DB) but is documented as a security trade-off, not a recommended default.
 - `redact validate` emits a soft warning when a configured tool entry is a raw client (`mysql`, `psql`, `mongosh`, `sqlite3`, …) rather than a toolkit wrapper, so users are informed of the gap.
 
+### Enforcement strength varies by harness
+
+`redact`'s safety guarantee depends on whether the harness's hook contract supports transparent rewrite (`updatedInput`):
+
+| Harness | Mechanism | Guarantee | Status |
+|---|---|---|---|
+| Claude Code | `updatedInput` rewrite | **Enforcing** — the AI cannot opt out; the rewritten command is what the harness runs | Shipped |
+| opencode | `tool.execute.before` plugin mutates `output.args.command` | **Enforcing** — same guarantee as Claude Code; the plugin rewrites the bash tool's args before the subprocess spawns | Planned (Milestone 9) |
+| VS Code Copilot Chat | `updatedInput` rewrite | **Enforcing** | Compatible by reusing the snake_case shape; user wires the hook in their VS Code settings (no `redact init` mode in v1) |
+| GitHub Copilot CLI | `permissionDecision: deny` + suggestion | **Advisory** — Copilot CLI's API does not support rewrite; the AI is denied and asked to retry with the suggested command. It may comply, abandon the query, or attempt a workaround | **Deferred** (Milestone 8 spec retained in plan.md) |
+
+Copilot CLI is deferred to a future release. Reason: deny-with-suggestion is materially weaker than transparent rewrite — strictly safer than no hook, but the AI could ignore the suggestion. We're holding the integration until either Copilot CLI gains an `updatedInput`-equivalent (in which case `redact hook` should switch to that path automatically) or user demand justifies shipping the advisory-only mode. Until then, the documented enforcement story is uniformly "enforcing".
+
 ---
 
 ## Functional Requirements
@@ -72,19 +85,27 @@ AI coding agents querying production datastores can inadvertently exfiltrate PII
 
 ### FR-2: Hook installation (`redact init`)
 
-- `redact init [--harness <name>]` writes a PreToolUse hook entry to the agent harness's settings (e.g. `~/.claude/settings.json` for Claude Code).
-- The hook entry registers `redact hook` as a Bash PreToolUse callback.
-- v1 supports `--harness claude-code` only (default). Other harnesses (Cursor, Gemini CLI, OpenCode, Copilot CLI) are out of scope for v1.
-- `redact init` is idempotent: re-running detects an existing hook entry and skips or upgrades it; never duplicates.
+- `redact init [--harness <name>]` writes the harness-specific hook configuration so `redact hook` is invoked as a PreToolUse callback. Default `--harness` value is `claude-code`.
+- Supported harnesses:
+  - `claude-code` — writes a `PreToolUse` entry into `~/.claude/settings.json` registering `redact hook` against the `Bash` matcher. **Shipped.**
+  - `opencode` — writes a TypeScript plugin file at `~/.config/opencode/plugin/redact.ts` (or `./.opencode/plugin/redact.ts` with `--scope project`). The plugin's `tool.execute.before` hook mutates `output.args.command` to the rewritten value, giving an enforcing guarantee equivalent to Claude Code. **Planned — Milestone 9.**
+  - `copilot-cli` — writes a project-scoped `preToolUse` hook config and a `.github/copilot-instructions.md` snippet. **Deferred to a future release** (advisory enforcement only — see Security Model). Spec retained in `docs/plan.md` Milestone 8.
+- Other harnesses (Cursor, Gemini CLI, Aider) remain out of scope.
+- `redact init` is idempotent for every supported harness: re-running detects an existing hook entry and skips or upgrades it; never duplicates. For `opencode`, the plugin file is overwritten in place when its leading redact header is present (treated as upgrade) and refused when the header is absent (avoids clobbering a user-authored file with the same name).
 
 ### FR-2a: Hook execution (`redact hook`)
 
-- Implements the harness's PreToolUse callback contract: reads the about-to-run Bash command from stdin, decides intercept vs. passthrough, and emits the (possibly rewritten) command to stdout.
-- Decision logic:
-  1. Parse the incoming command line; extract `argv[0]` (basename).
-  2. If `argv[0]` is not a key in `tools:`, emit the original command unchanged (passthrough).
+- Implements the calling harness's PreToolUse callback contract. Reads the about-to-run command from stdin as JSON, decides intercept vs. passthrough, and emits a harness-appropriate JSON response (or no output for passthrough).
+- **Input format.** v1 supports a single on-the-wire shape — the snake_case PreToolUse JSON used by Claude Code and VS Code Copilot Chat: `{"tool_name":"Bash","tool_input":{"command":"..."}}`. Extracts `tool_input.command`. Any other shape: passthrough.
+- **opencode reuses the same shape via a bundled plugin** (Milestone 9). The plugin file `redact init --harness opencode` writes runs inside opencode's TypeScript plugin runtime, formats the bash tool's args as snake_case JSON, pipes them to `redact hook`, then mutates `output.args.command` from the response. From `redact hook`'s point of view there is exactly one input shape; the per-harness translation lives in the plugin glue.
+- **Decision logic** (independent of harness once the command string is extracted):
+  1. Parse the command line; extract the configured tool token (basename).
+  2. If the tool basename is not a key in `tools:`, passthrough.
   3. If the command is already prefixed with `redact run`, passthrough (loop avoidance).
-  4. Otherwise, emit `redact run -- <original command>`. `redact run` will read `tools:` config to find `sql_arg` for the tool.
+  4. Otherwise, build the rewritten command string `redact run -- <original command>`.
+- **Output format:** emit `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"redact run -- ..."}}}`. Both Claude Code (directly) and the opencode plugin (which extracts `hookSpecificOutput.updatedInput.command` and assigns it to `output.args.command`) consume this shape.
+- **Copilot CLI's camelCase deny-with-suggestion shape is specced in `docs/plan.md` Milestone 8 but deferred** — see Security Model for why the advisory model is held back.
+- **Passthrough path** writes nothing to stdout and exits 0; every harness treats no-output-from-hook as "run the original command unchanged".
 - Must be fast on the passthrough path (single-digit ms) since it runs on every Bash command.
 
 ### FR-2b: Config management (`redact config`)
@@ -102,7 +123,7 @@ AI coding agents querying production datastores can inadvertently exfiltrate PII
 |---|---|---|
 | `redact run -- <tool args...>` | Execute the wrapped tool with Gate 1 + Gate 2 (invoked by the hook, not by users) | No |
 | `redact hook` | PreToolUse callback: rewrite or passthrough the incoming Bash command | No |
-| `redact init [--harness claude-code]` | Register the PreToolUse hook in the harness settings | Yes |
+| `redact init [--harness claude-code\|opencode] [--scope project\|global]` | Register the PreToolUse hook in the harness settings (Claude Code: `~/.claude/settings.json`; opencode: TypeScript plugin file at the chosen scope). `copilot-cli` is deferred — see plan.md Milestone 8. | Yes |
 | `redact config [--path \| --print \| --init-only]` | Manage `redact`'s own config file (interactive edit by default) | Yes (interactive); `--path`/`--print` allowed |
 | `redact list` | Print configured tools and their `sql_arg` values | No (read-only) |
 | `redact validate` | Load config, compile patterns, report errors and soft warnings (raw-client warning, overly broad patterns) | No |

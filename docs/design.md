@@ -36,9 +36,34 @@ redact layer:   PreToolUse hook     →  tkpsql        (PII scan on returned JSO
 
 ## Interception Model
 
-`redact` does **not** generate wrapper scripts on PATH. Instead, it registers a PreToolUse hook in the agent harness (Claude Code's `~/.claude/settings.json` for v1). Every Bash command the AI tries to run is offered to `redact hook` first; commands that match a configured tool are rewritten to route through `redact run`. Humans and CI scripts running outside the agent harness see no change in behavior — the hook only fires inside the harness.
+`redact` does **not** generate wrapper scripts on PATH. Instead, it registers a PreToolUse hook in the agent harness. Every Bash command the AI tries to run is offered to `redact hook` first; commands that match a configured tool are routed through `redact run`. Humans and CI scripts running outside the agent harness see no change in behavior — the hook only fires inside the harness.
 
 This closes the bypass surface that wrapper scripts left open: the AI cannot invoke `tkpsql` directly to skip filtering, because every Bash invocation passes through the hook.
+
+### Per-harness installation surface
+
+| Harness | Hook config location | Written by `redact init --harness …` | Status |
+|---|---|---|---|
+| Claude Code | `~/.claude/settings.json` (`hooks.PreToolUse[]`, PascalCase) | `claude-code` (default) | Shipped |
+| opencode | TypeScript plugin file at `~/.config/opencode/plugin/redact.ts` (global, default) or `./.opencode/plugin/redact.ts` (with `--scope project`). The plugin's `tool.execute.before` hook mutates `output.args.command` for the bash tool. | `opencode` | Planned (plan.md Milestone 9) |
+| GitHub Copilot CLI | `./.github/hooks/hooks.json` (project-scoped, `hooks.preToolUse[]`, lowerCamelCase per [GitHub's hooks reference](https://docs.github.com/en/copilot/reference/hooks-configuration)) **plus** `.github/copilot-instructions.md` snippet | `copilot-cli` | **Deferred** (advisory enforcement only — see Enforcement Strength below; spec retained in plan.md Milestone 8) |
+
+VS Code Copilot Chat is supported by the same `redact hook` binary (its hook input shape matches Claude Code's snake_case format), but its installation is part of the user's VS Code configuration and is **not** managed by `redact init` in v1.
+
+### Hook input/output format (single shape)
+
+`redact hook` accepts one input shape — the snake_case PreToolUse JSON used by Claude Code and VS Code Copilot Chat — and emits one response shape:
+
+| Detected shape | Source | Response on intercept |
+|---|---|---|
+| `{"tool_name":"Bash","tool_input":{"command":"…"}}` | Claude Code, VS Code Copilot Chat, **opencode** (via the bundled plugin's translation layer) | `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"redact run -- …"}}}` — transparent rewrite |
+| Anything else | — | Passthrough (no stdout output, exit 0) |
+
+Per-harness translation lives **outside** `redact hook`:
+
+- **Claude Code / VS Code Copilot Chat** speak this shape natively.
+- **opencode** uses a TypeScript plugin (written by `redact init --harness opencode`) that translates opencode's `tool.execute.before(input, output)` call into the snake_case JSON above, pipes it to `redact hook`, parses `hookSpecificOutput.updatedInput.command` from the response, and assigns it to `output.args.command`. The mutation propagates to the bash subprocess opencode spawns — same enforcing guarantee as Claude Code.
+- **GitHub Copilot CLI** would need a different output shape (`permissionDecision: "deny"` + reason — Copilot CLI does not accept `updatedInput`). That path is specced in plan.md Milestone 8 but deferred; the deferral keeps `redact hook` to a single output contract and avoids shipping the advisory-only enforcement model. See requirements.md "Enforcement strength varies by harness" for the full trade-off.
 
 ---
 
@@ -291,16 +316,17 @@ pii:
 |---|---|---|
 | `redact run -- <tool args...>` | Execute the wrapped tool with Gate 1 + Gate 2. Looks up `tools[argv[0]].sql_arg` from config to find the SQL flag. | No |
 | `redact hook` | PreToolUse callback: read Bash command from stdin, decide intercept vs. passthrough, emit (possibly rewritten) command to stdout | No |
-| `redact init [--harness claude-code]` | Register the PreToolUse hook in the harness settings | Yes |
+| `redact init [--harness claude-code\|opencode] [--scope project\|global]` | Register the PreToolUse hook (Claude: `~/.claude/settings.json`; opencode: TypeScript plugin file at the chosen scope). `copilot-cli` deferred — see plan.md Milestone 8. | Yes |
 | `redact config [--path \| --print \| --init-only]` | Manage `redact`'s own config file (interactive edit by default) | Yes (interactive); `--path`/`--print` allowed |
 | `redact list` | Print configured tools and their `sql_arg` values | No (read-only) |
 | `redact validate` | Load config, compile patterns, report errors and soft warnings | No |
 | `redact version` | Print version | No |
 
-**Hook entry written by `redact init` (Claude Code example):**
+**Hook entries written by `redact init`:**
+
+*Claude Code* — `~/.claude/settings.json`:
 
 ```jsonc
-// ~/.claude/settings.json
 {
   "hooks": {
     "PreToolUse": [
@@ -310,20 +336,56 @@ pii:
 }
 ```
 
+*opencode* (planned, plan.md Milestone 9) — TypeScript plugin file at `~/.config/opencode/plugin/redact.ts` (default global; `--scope project` writes `./.opencode/plugin/redact.ts` instead). The plugin's `tool.execute.before` hook synchronously calls `redact hook` with snake_case JSON, parses the response, and mutates `output.args.command`. Sketch:
+
+```ts
+import { spawnSync } from "node:child_process"
+
+export const RedactPlugin = async () => ({
+  "tool.execute.before": async (input, output) => {
+    if (input.tool !== "bash") return
+    const cmd = output.args.command
+    if (typeof cmd !== "string" || cmd.length === 0) return
+    const result = spawnSync("redact", ["hook"], {
+      input: JSON.stringify({ tool_name: "Bash", tool_input: { command: cmd } }),
+      encoding: "utf8",
+      timeout: 5000,
+    })
+    if (result.status !== 0 || !result.stdout) return
+    try {
+      const updated = JSON.parse(result.stdout)?.hookSpecificOutput?.updatedInput?.command
+      if (typeof updated === "string" && updated.length > 0) {
+        output.args.command = updated
+      }
+    } catch { /* malformed → passthrough */ }
+  },
+})
+```
+
+The mutation propagates because opencode's plugin contract treats `output.args` as mutable (verified in `sst/opencode:packages/plugin/src/index.ts`).
+
+*GitHub Copilot CLI* — **deferred** to a future release. See plan.md Milestone 8 for the full schema and `init_copilot` design (`./.github/hooks/hooks.json` with `version: 1` + lowerCamelCase `preToolUse[]`, plus `.github/copilot-instructions.md` anchor block).
+
 **Hook decision logic (`redact hook`):**
 
 ```
-read full Bash command from stdin
-parse argv[0] (basename, strip leading paths)
+read full JSON request from stdin
+parse as snake_case PreToolUse shape; if not parseable → passthrough (no output, exit 0)
+extract command from tool_input.command
 
-if argv[0] in tools:
-    if command already starts with "redact run":
-        emit unchanged                              # loop avoidance
-    else:
-        emit "redact run -- <original command>"
-else:
-    emit unchanged                                  # passthrough
+parse tokens; find the configured tool token (basename)
+if tool basename not in tools:               # passthrough
+    write nothing, exit 0
+if command already starts with "redact run": # loop avoidance
+    write nothing, exit 0
+
+build new_command = "redact run -- <original command>"
+emit hookSpecificOutput{ permissionDecision: allow,
+                         updatedInput: { command: new_command } }
+exit 0
 ```
+
+opencode reuses this same pipeline — its plugin is responsible for converting opencode's `tool.execute.before` arguments into the snake_case shape on the way in, and for assigning `hookSpecificOutput.updatedInput.command` back to `output.args.command` on the way out. Copilot CLI would need a different output shape; that work is deferred (plan.md Milestone 8).
 
 Agent-harness gating is a single `is_agent_harness()` check at the top of the `init` and interactive-`config` handlers. The hook itself runs unconditionally — it must, since its whole purpose is to fire inside the agent harness.
 
@@ -349,8 +411,10 @@ redact/
       src/
         main.rs         # CLI entrypoint, clap subcommand dispatch
         run.rs          # `redact run`: spawn subprocess, capture stdout, apply Gate 1 + Gate 2
-        hook.rs         # `redact hook`: PreToolUse callback (parse cmd, decide rewrite)
-        init.rs         # `redact init`: write hook entry to harness settings
+        hook.rs         # `redact hook`: PreToolUse callback (format detection, decide rewrite, dual output)
+        init.rs         # `redact init`: dispatches per --harness; Claude Code path
+        init_opencode.rs # `redact init --harness opencode`: writes ~/.config/opencode/plugin/redact.ts (planned, plan.md M9)
+        # init_copilot.rs # `redact init --harness copilot-cli`: deferred — see plan.md M8
         config_cmd.rs   # `redact config`: create starter config + open in $EDITOR
         list.rs         # `redact list`: print configured tools
         validate.rs     # `redact validate`: parse config + compile patterns + soft warnings
@@ -476,5 +540,5 @@ Some patterns (short phone numbers, 9-digit IDs that look like SSNs) have high f
 4. **Tool returns an error:** Gate 2 detects the `{"error": "..."}` shape and passes it through unchanged (resolved).
 5. **JSON output shape:** Resolved. Adaptive handling per the shape-detection table in the Output Format section: object inputs get `_redact_summary` attached as a sibling; array inputs are wrapped as `{"rows": ..., "_redact_summary": ...}` only when `include_summary: true`; errors pass through unchanged.
 6. **Pattern-matching robustness in `redact hook`:** Basename-only matching of `argv[0]` is the v1 plan. Open: how to handle aliases (e.g. user shell aliases `tk=tkpsql`), shell pipelines (`tkpsql ... | jq ...`), and `env VAR=val tkpsql ...`. v1 likely starts with simple basename matching and adds smarter parsing if false negatives bite.
-7. **Multi-harness support:** v1 = Claude Code only. Cursor, Gemini CLI, OpenCode, Copilot CLI use different hook contracts. Adding them is incremental work behind `redact init --harness <name>`.
+7. **Multi-harness support:** v1 shipped Claude Code. Milestone 9 adds opencode (transparent rewrite via `tool.execute.before` plugin — enforcing). VS Code Copilot Chat is compatible by reusing the snake_case shape but its install lives in the user's VS Code config (no `redact init` mode in v1). GitHub Copilot CLI (deny-with-suggestion, advisory) is specced in Milestone 8 but deferred. Cursor, Gemini CLI, and Aider remain incremental work behind `redact init --harness <name>`.
 8. **Audit logging:** Out of scope for v1, but the summary field in output is the foundation. A future `--audit-log` flag could append redaction events to a file.
