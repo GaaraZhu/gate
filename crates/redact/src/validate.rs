@@ -85,10 +85,7 @@ fn report_harness_installations() {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) {
                     if v["hooks"]["PreToolUse"]
                         .as_array()
-                        .map(|arr| {
-                            arr.iter()
-                                .any(crate::init::entry_has_redact_hook)
-                        })
+                        .map(|arr| arr.iter().any(crate::init::entry_has_redact_hook))
                         .unwrap_or(false)
                     {
                         found.push(format!("Claude Code ({})", path.display()));
