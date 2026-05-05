@@ -15,6 +15,7 @@ pub const COLUMN_DENYLIST: &[&str] = &[
     "full_name",
     "first_name",
     "last_name",
+    "surname",
     "birthdate",
 ];
 
@@ -69,12 +70,19 @@ const TOKEN_SYNONYMS: &[(&str, &str)] = &[
     ("npi", "npi"),
     ("license", "license"),
     ("ip", "ip"),
+    ("surname", "name"),
     // Bigram entries: matched via consecutive token pairs joined without separator.
     // "product_name" → ["product","name"] → bigram "productname" → no match (safe).
     // "first_name"   → ["first","name"]   → bigram "firstname"   → match.
     ("firstname", "name"),
+    ("firstnames", "name"),
     ("lastname", "name"),
+    ("lastnames", "name"),
     ("fullname", "name"),
+    ("givenname", "name"),
+    ("givennames", "name"),
+    ("familyname", "name"),
+    ("familynames", "name"),
 ];
 
 /// Split `name` into lowercase tokens, handling underscore/hyphen separators and camelCase.
@@ -99,6 +107,22 @@ fn tokenize_column(name: &str) -> Vec<String> {
         .collect()
 }
 
+/// Person-entity prefixes: `<prefix>_name` / `<prefix>_names` → "name".
+/// Deliberately excludes generic prefixes like "account", "vendor", "company"
+/// that more often refer to non-person entities.
+const NAME_PREFIXES: &[&str] = &[
+    "contact",
+    "person",
+    "customer",
+    "client",
+    "employee",
+    "member",
+    "patient",
+    "owner",
+    "recipient",
+    "sender",
+];
+
 /// Returns the PII type label if any token (or consecutive token bigram) of `column_name`
 /// matches a sensitive synonym. First match in `TOKEN_SYNONYMS` wins.
 ///
@@ -116,6 +140,12 @@ pub fn classify_column(column_name: &str) -> Option<&'static str> {
         let bigram = format!("{}{}", pair[0], pair[1]);
         if let Some(&(_, pii_type)) = TOKEN_SYNONYMS.iter().find(|(t, _)| *t == bigram.as_str()) {
             return Some(pii_type);
+        }
+    }
+    // Prefix-name pass: <person-prefix> + "name"/"names" → "name"
+    for pair in tokens.windows(2) {
+        if NAME_PREFIXES.contains(&pair[0].as_str()) && (pair[1] == "name" || pair[1] == "names") {
+            return Some("name");
         }
     }
     None
@@ -252,6 +282,7 @@ mod tests {
             "full_name",
             "first_name",
             "last_name",
+            "surname",
             "birthdate",
         ];
         for entry in &required {
@@ -477,11 +508,36 @@ mod tests {
     }
 
     #[test]
+    fn classify_name_synonyms() {
+        assert_eq!(classify_column("surname"), Some("name"));
+        assert_eq!(classify_column("contact_surname"), Some("name"));
+        assert_eq!(classify_column("first_names"), Some("name"));
+        assert_eq!(classify_column("last_names"), Some("name"));
+        assert_eq!(classify_column("contact_first_names"), Some("name"));
+        assert_eq!(classify_column("given_name"), Some("name"));
+        assert_eq!(classify_column("given_names"), Some("name"));
+        assert_eq!(classify_column("family_name"), Some("name"));
+        assert_eq!(classify_column("family_names"), Some("name"));
+    }
+
+    #[test]
+    fn classify_name_prefix_allowlist() {
+        assert_eq!(classify_column("contact_name"), Some("name"));
+        assert_eq!(classify_column("customer_name"), Some("name"));
+        assert_eq!(classify_column("person_name"), Some("name"));
+        assert_eq!(classify_column("employee_name"), Some("name"));
+        assert_eq!(classify_column("patient_name"), Some("name"));
+        assert_eq!(classify_column("recipient_name"), Some("name"));
+    }
+
+    #[test]
     fn classify_name_bigram_no_false_positives() {
-        // "name" alone must not trigger — only first/last/full + name bigrams
+        // "name" alone must not trigger — only known prefixes/bigrams
         assert_eq!(classify_column("product_name"), None);
         assert_eq!(classify_column("company_name"), None);
         assert_eq!(classify_column("category_name"), None);
+        assert_eq!(classify_column("account_name"), None);
+        assert_eq!(classify_column("vendor_name"), None);
         assert_eq!(classify_column("name"), None);
     }
 
