@@ -32,6 +32,11 @@ pub struct ToolConfig {
     /// must accept `--sql <query>` and emit JSON consumable by Gate 2.
     #[serde(default)]
     pub json_tool: Option<String>,
+    /// When set, the hook wraps this tool's command as `sh -c '<command> | <pipe>'`
+    /// so Gate 2 always receives the piped output. Useful for tools like curl whose
+    /// output is not JSON by default (e.g. `pipe: "jq -c ."`).
+    #[serde(default)]
+    pub pipe: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -312,5 +317,19 @@ pii:
     fn unknown_action_variant_is_error() {
         let result = load_from_yaml("pii:\n  action: explode\n");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn pipe_field_parses_correctly() {
+        let config = load_from_yaml("tools:\n  curl:\n    pipe: \"jq -c .\"\n").unwrap();
+        assert_eq!(config.tools["curl"].pipe, Some("jq -c .".to_string()));
+        assert!(config.tools["curl"].sql_arg.is_none());
+        assert!(config.tools["curl"].json_tool.is_none());
+    }
+
+    #[test]
+    fn pipe_defaults_to_none() {
+        let config = load_from_yaml("tools:\n  psql:\n    sql_arg: \"-c\"\n").unwrap();
+        assert!(config.tools["psql"].pipe.is_none());
     }
 }

@@ -12,6 +12,8 @@ tools:
     sql_arg: "--sql"
   tkmsql:
     sql_arg: "--sql"
+  curl:
+    pipe: "jq -c ."   # wraps curl output through jq so Gate 2 always receives JSON
 
 pii:
   action: redact           # redact | warn | reject

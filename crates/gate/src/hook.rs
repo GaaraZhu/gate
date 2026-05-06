@@ -64,15 +64,21 @@ fn process(stdin: &str, config: &Config) -> Option<String> {
     };
     let tool_config = config.tools.get(basename)?;
 
-    // For nested invocations (tool inside `sh -c "..."`) skip json_tool rewriting —
-    // the json_tool binary may not exist in the target environment (container/pod).
+    // For nested invocations (tool inside `sh -c "..."`) skip json_tool/pipe rewriting —
+    // the helper binaries may not exist in the target environment (container/pod).
     let effective_command = match &tool_match {
         command::ToolMatch::Direct { idx, .. } => {
             match (&tool_config.json_tool, &tool_config.sql_arg) {
                 (Some(json_tool), Some(sql_arg)) => {
                     rewrite_to_json_tool(&tokens, *idx, sql_arg, json_tool)
                 }
-                _ => command.clone(),
+                _ => {
+                    if let Some(pipe_cmd) = &tool_config.pipe {
+                        wrap_with_pipe(&command, pipe_cmd)
+                    } else {
+                        command.clone()
+                    }
+                }
             }
         }
         command::ToolMatch::Nested { .. } => command.clone(),
@@ -97,6 +103,13 @@ fn process(stdin: &str, config: &Config) -> Option<String> {
         })
         .to_string(),
     )
+}
+
+/// Wrap `command` as `sh -c '<command> | <pipe_cmd>'` so gate run's subprocess emits
+/// the piped output. Used for tools like curl whose raw output is not JSON.
+fn wrap_with_pipe(command: &str, pipe_cmd: &str) -> String {
+    let inner = format!("{command} | {pipe_cmd}");
+    format!("sh -c {}", shell_words::quote(&inner))
 }
 
 /// Rewrite `tokens` so that the token at `tool_idx` is replaced with `json_tool` and
@@ -146,6 +159,7 @@ mod tests {
                     ToolConfig {
                         sql_arg: sql_arg.map(String::from),
                         json_tool: json_tool.map(String::from),
+                        pipe: None,
                     },
                 )
             })
@@ -574,6 +588,78 @@ mod tests {
             .unwrap();
         assert!(cmd.starts_with("gate run -- psql"), "unexpected cmd: {cmd}");
         assert!(!cmd.contains("psql-json"), "should not rewrite: {cmd}");
+    }
+
+    fn make_pipe_config(name: &str, pipe: &str) -> Config {
+        let mut tools = HashMap::new();
+        tools.insert(
+            name.to_string(),
+            ToolConfig {
+                sql_arg: None,
+                json_tool: None,
+                pipe: Some(pipe.to_string()),
+            },
+        );
+        Config {
+            tools,
+            ..Config::default()
+        }
+    }
+
+    // ── pipe rewrite tests (curl / jq -c .) ──────────────────────────────────
+
+    #[test]
+    fn pipe_wraps_command_in_sh_c() {
+        let _guard = LOCK.lock().unwrap();
+        let config = make_pipe_config("curl", "jq -c .");
+        let out = process(&make_input("curl https://api.example.com/users"), &config).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.starts_with("gate run -- sh -c"), "got: {cmd}");
+        assert!(
+            cmd.contains("curl https://api.example.com/users"),
+            "got: {cmd}"
+        );
+        assert!(cmd.contains("jq -c ."), "got: {cmd}");
+    }
+
+    #[test]
+    fn pipe_preserves_curl_flags() {
+        let _guard = LOCK.lock().unwrap();
+        let config = make_pipe_config("curl", "jq -c .");
+        let out = process(
+            &make_input("curl -s -H 'Authorization: Bearer tok' https://api.example.com"),
+            &config,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.contains("curl"), "got: {cmd}");
+        assert!(cmd.contains("-H"), "got: {cmd}");
+        assert!(cmd.contains("jq -c ."), "got: {cmd}");
+    }
+
+    #[test]
+    fn pipe_nested_curl_not_rewrapped() {
+        let _guard = LOCK.lock().unwrap();
+        // curl inside sh -c is a Nested match — pipe rewrite is skipped
+        let config = make_pipe_config("curl", "jq -c .");
+        let out = process(
+            &make_input(r#"sh -c "curl https://api.example.com""#),
+            &config,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        // Nested: command is passed through to gate run unchanged, not double-wrapped
+        assert!(cmd.starts_with("gate run -- sh -c"), "got: {cmd}");
+        assert!(!cmd.contains("sh -c 'sh -c"), "must not double-wrap: {cmd}");
     }
 
     // ── shell interpreter (-c) tests ──────────────────────────────────────────
