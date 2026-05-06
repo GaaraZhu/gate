@@ -96,6 +96,15 @@ gate init --harness opencode --scope project  # project: ./.opencode/plugin/gate
 
 Restart your opencode session after running `gate init` to load the plugin.
 
+## Uninstallation
+
+```bash
+gate uninstall
+brew uninstall gate
+```
+
+`gate uninstall` removes everything gate added to your system — the hook from `~/.claude/settings.json`, the config directory at `~/.config/gate/`, and any gate-generated opencode plugins. It shows you exactly what will be deleted and asks for confirmation before touching anything.
+
 > **Roadmap — additional harnesses.**
 > - **GitHub Copilot CLI** — deferred to a future release. Copilot CLI's `preToolUse` hook only supports deny-with-suggestion (no transparent rewrite), which makes the integration *advisory* — strictly safer than no hook, but the AI could in principle ignore the suggested rewrite. We're holding the integration until either Copilot CLI gains an `updatedInput` equivalent or the user demand justifies shipping the advisory-only mode.
 
@@ -183,6 +192,7 @@ pii:
 | Command | Purpose |
 |---|---|
 | `gate init [--harness claude-code\|opencode] [--scope global\|project]` | Register the hook in the agent harness. `claude-code` (default) writes `~/.claude/settings.json`; `opencode` writes a TypeScript plugin at the chosen scope. |
+| `gate uninstall` | Remove the hook, config directory, and gate-generated opencode plugins (with confirmation) |
 | `gate enable` | Enable PII redaction (sets `enabled: true` in config) |
 | `gate disable` | Disable PII redaction (sets `enabled: false` in config) |
 | `gate config` | Create and edit the config file |
