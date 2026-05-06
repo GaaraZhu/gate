@@ -53,6 +53,15 @@ pub struct PiiConfig {
     pub redaction: String,
     #[serde(default = "default_true")]
     pub include_summary: bool,
+    /// When true, redacted values are replaced with a deterministic 8-char hex hash
+    /// (e.g. `[PII:email:7f83b165]`) instead of the bare type label. The hash is
+    /// salted with `hash_salt`, enabling cross-record joins without raw data exposure.
+    #[serde(default)]
+    pub hash_values: bool,
+    /// Salt prepended to each value before hashing. Set a fixed secret to get
+    /// consistent hashes across runs; leave empty for zero-config determinism.
+    #[serde(default)]
+    pub hash_salt: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default, PartialEq)]
@@ -102,6 +111,8 @@ impl Default for PiiConfig {
             confidence_threshold: default_confidence_threshold(),
             redaction: default_redaction(),
             include_summary: true,
+            hash_values: false,
+            hash_salt: String::new(),
         }
     }
 }
@@ -185,6 +196,8 @@ mod tests {
         assert!(config.tools.is_empty());
         assert!(config.pii.column_names.is_empty());
         assert!(config.pii.patterns.is_empty());
+        assert!(!config.pii.hash_values);
+        assert_eq!(config.pii.hash_salt, "");
     }
 
     #[test]
@@ -220,6 +233,8 @@ pii:
   confidence_threshold: 0.9
   redaction: "[REDACTED:{type}]"
   include_summary: false
+  hash_values: true
+  hash_salt: "my-secret"
   column_names:
     - secret_token
   patterns:
@@ -236,6 +251,8 @@ pii:
         assert_eq!(config.pii.confidence_threshold, 0.9);
         assert_eq!(config.pii.redaction, "[REDACTED:{type}]");
         assert!(!config.pii.include_summary);
+        assert!(config.pii.hash_values);
+        assert_eq!(config.pii.hash_salt, "my-secret");
         assert_eq!(config.pii.column_names, vec!["secret_token"]);
         let pat = &config.pii.patterns["custom_id"];
         assert_eq!(pat.regex, r"\bID-\d{6}\b");
@@ -253,6 +270,23 @@ pii:
         assert!(config.pii.include_summary);
         assert_eq!(config.pii.wildcard_policy, WildcardPolicy::Warn);
         assert!(config.tools.is_empty());
+        assert!(!config.pii.hash_values, "hash_values must default to false");
+        assert_eq!(config.pii.hash_salt, "", "hash_salt must default to empty");
+    }
+
+    #[test]
+    fn hash_values_parsed_from_yaml() {
+        let config =
+            load_from_yaml("pii:\n  hash_values: true\n  hash_salt: \"my-secret\"\n").unwrap();
+        assert!(config.pii.hash_values);
+        assert_eq!(config.pii.hash_salt, "my-secret");
+    }
+
+    #[test]
+    fn hash_values_false_explicit() {
+        let config = load_from_yaml("pii:\n  hash_values: false\n").unwrap();
+        assert!(!config.pii.hash_values);
+        assert_eq!(config.pii.hash_salt, "");
     }
 
     #[test]

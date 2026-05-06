@@ -386,6 +386,88 @@ fn env_disabled_passes_through_without_redaction() {
     assert!(v.get("_gate_summary").is_none());
 }
 
+/// hash_values: true in config produces [PII:type:XXXXXXXX] placeholders end-to-end.
+#[test]
+fn hash_mode_end_to_end() {
+    let dir = tmp();
+    let tool = write_script(
+        &dir,
+        "fake-tkpsql",
+        r#"echo '{"rows":[{"id":1,"email":"alice@example.com","ssn":"123-45-6789"}],"count":1}'"#,
+    );
+    let config = write_config(
+        &dir,
+        "tools:\n  fake-tkpsql:\n    sql_arg: \"--sql\"\npii:\n  hash_values: true\n  hash_salt: \"test\"\n",
+    );
+
+    let out = redact_run(
+        &config,
+        &tool,
+        &["--sql", "SELECT id, email, ssn FROM users"],
+    );
+
+    assert_eq!(exit_code(&out), 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+
+    let email_val = v["rows"][0]["email"].as_str().unwrap();
+    let ssn_val = v["rows"][0]["ssn"].as_str().unwrap();
+
+    // Both fields must carry a hash suffix.
+    assert!(email_val.starts_with("[PII:email:"), "email: {email_val}");
+    assert!(ssn_val.starts_with("[PII:ssn:"), "ssn: {ssn_val}");
+
+    // Hash suffix is exactly 8 lowercase hex chars.
+    let email_hash = email_val
+        .strip_prefix("[PII:email:")
+        .unwrap()
+        .strip_suffix(']')
+        .unwrap();
+    let ssn_hash = ssn_val
+        .strip_prefix("[PII:ssn:")
+        .unwrap()
+        .strip_suffix(']')
+        .unwrap();
+    assert_eq!(email_hash.len(), 8);
+    assert_eq!(ssn_hash.len(), 8);
+    assert!(email_hash.chars().all(|c| c.is_ascii_hexdigit()));
+    assert!(ssn_hash.chars().all(|c| c.is_ascii_hexdigit()));
+
+    // Non-PII columns and structure are preserved.
+    assert_eq!(v["rows"][0]["id"], 1);
+    assert_eq!(v["count"], 1);
+
+    // Summary types remain bare names.
+    let types = v["_gate_summary"]["types"].as_array().unwrap();
+    let type_strs: Vec<&str> = types.iter().map(|t| t.as_str().unwrap()).collect();
+    assert!(type_strs.contains(&"email"));
+    assert!(type_strs.contains(&"ssn"));
+    for t in &type_strs {
+        assert!(!t.contains(':'), "type in summary must be bare: {t}");
+    }
+}
+
+/// hash_mode is deterministic: same input with same salt produces identical output across runs.
+#[test]
+fn hash_mode_deterministic_across_invocations() {
+    let dir = tmp();
+    let tool = write_script(
+        &dir,
+        "fake-tkpsql",
+        r#"echo '{"email":"alice@example.com"}'"#,
+    );
+    let config = write_config(
+        &dir,
+        "tools:\n  fake-tkpsql:\n    sql_arg: \"--sql\"\npii:\n  hash_values: true\n  hash_salt: \"fixed\"\n",
+    );
+
+    let out1 = redact_run(&config, &tool, &["--sql", "SELECT email FROM users"]);
+    let out2 = redact_run(&config, &tool, &["--sql", "SELECT email FROM users"]);
+
+    let v1: serde_json::Value = serde_json::from_str(&stdout(&out1)).unwrap();
+    let v2: serde_json::Value = serde_json::from_str(&stdout(&out2)).unwrap();
+    assert_eq!(v1["email"], v2["email"], "hash must be stable across runs");
+}
+
 /// `--sql=VALUE` form (equals sign) must be parsed correctly by find_flag_value.
 #[test]
 fn sql_flag_equals_form_parsed() {

@@ -192,13 +192,12 @@ fn scan_string(
         return Value::String(s);
     }
 
-    let template = &config.redaction;
     let key_lower = key.map(|k| k.to_lowercase());
 
     // 1. Gate 1 forced columns (keys are pre-lowercased by Gate 1).
     if let Some(ref k) = key_lower {
         if let Some(type_label) = plan.forced_columns.get(k.as_str()) {
-            return do_redact(type_label, template, summary);
+            return do_redact(type_label, &s, config, summary);
         }
     }
 
@@ -206,7 +205,7 @@ fn scan_string(
     //    Force-redacts any value under a PII-named key, regardless of content.
     if let Some(k) = key {
         if let Some(pii_type) = classify_column(k) {
-            return do_redact(pii_type, template, summary);
+            return do_redact(pii_type, &s, config, summary);
         }
     }
 
@@ -214,7 +213,7 @@ fn scan_string(
     //    Covers user-supplied column names not handled by the synonym table.
     if let Some(ref k) = key_lower {
         if effective_names.iter().any(|n| n == k) {
-            return do_redact(k.as_str(), template, summary);
+            return do_redact(k.as_str(), &s, config, summary);
         }
     }
 
@@ -232,7 +231,7 @@ fn scan_string(
 
     // 5. Luhn check — always redacts Luhn-valid card-shaped strings.
     if Luhn::check(&s) {
-        return do_redact("credit_card", template, summary);
+        return do_redact("credit_card", &s, config, summary);
     }
 
     // 6. Regex pattern scan. column_name_boost is not applied here: any column
@@ -248,7 +247,7 @@ fn scan_string(
     }
     if let Some((name, score)) = best {
         if score >= config.confidence_threshold {
-            return do_redact(name, template, summary);
+            return do_redact(name, &s, config, summary);
         }
         // Low-confidence: warn but do not redact. Raw value is intentionally excluded.
         summary.warnings.push(format!(
@@ -264,10 +263,39 @@ fn scan_string(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn do_redact(pii_type: &str, template: &str, summary: &mut RedactSummary) -> Value {
+fn do_redact(
+    pii_type: &str,
+    original: &str,
+    config: &PiiConfig,
+    summary: &mut RedactSummary,
+) -> Value {
     summary.redacted += 1;
     summary.types.insert(pii_type.to_string());
-    Value::String(template.replace("{type}", pii_type))
+    let type_token = if config.hash_values {
+        let h = hash_value(&config.hash_salt, original);
+        format!("{}:{}", pii_type, h)
+    } else {
+        pii_type.to_string()
+    };
+    Value::String(config.redaction.replace("{type}", &type_token))
+}
+
+/// FNV-1a 64-bit, XOR-folded to 32 bits for an 8-char hex output.
+/// A null-byte separator between salt and value prevents `hash("ab","c") == hash("a","bc")`.
+fn hash_value(salt: &str, value: &str) -> String {
+    const FNV_OFFSET: u64 = 14695981039346656037;
+    const FNV_PRIME: u64 = 1099511628211;
+    let mut h = FNV_OFFSET;
+    for byte in salt
+        .bytes()
+        .chain(std::iter::once(0u8))
+        .chain(value.bytes())
+    {
+        h ^= byte as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    let folded = (h ^ (h >> 32)) as u32;
+    format!("{:08x}", folded)
 }
 
 /// True if `s` already looks like a redaction placeholder produced by `template`.
@@ -564,5 +592,252 @@ mod tests {
         } else {
             panic!("expected object");
         }
+    }
+
+    // ── 16. Deterministic hashing ─────────────────────────────────────────────
+
+    // ── hash_value unit tests ────────────────────────────────────────────────
+
+    #[test]
+    fn hash_value_always_8_lowercase_hex() {
+        for (salt, val) in [
+            ("", ""),
+            ("", "alice@example.com"),
+            ("secret", "123-45-6789"),
+            ("a", "b"),
+            ("long-salt-value", "4111111111111111"),
+        ] {
+            let h = hash_value(salt, val);
+            assert_eq!(h.len(), 8, "salt={salt:?} val={val:?} → {h}");
+            assert!(
+                h.chars().all(|c| c.is_ascii_hexdigit()),
+                "non-hex char in {h}"
+            );
+            assert_eq!(h, h.to_lowercase(), "must be lowercase");
+        }
+    }
+
+    #[test]
+    fn hash_value_same_inputs_same_output() {
+        assert_eq!(
+            hash_value("salt", "alice@example.com"),
+            hash_value("salt", "alice@example.com")
+        );
+    }
+
+    #[test]
+    fn hash_value_different_values_different_output() {
+        assert_ne!(
+            hash_value("salt", "alice@example.com"),
+            hash_value("salt", "bob@example.com")
+        );
+    }
+
+    #[test]
+    fn hash_value_salt_changes_output() {
+        let v = "alice@example.com";
+        assert_ne!(hash_value("salt-a", v), hash_value("salt-b", v));
+    }
+
+    #[test]
+    fn hash_value_empty_salt_valid() {
+        let h = hash_value("", "alice@example.com");
+        assert_eq!(h.len(), 8);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn hash_value_salt_prefix_not_same_as_concatenation() {
+        // hash("ab", "c") must differ from hash("a", "bc") to prevent salt-stripping attacks.
+        assert_ne!(hash_value("ab", "c"), hash_value("a", "bc"));
+    }
+
+    fn cfg_hash() -> PiiConfig {
+        PiiConfig {
+            hash_values: true,
+            hash_salt: "test-salt".to_string(),
+            ..PiiConfig::default()
+        }
+    }
+
+    #[test]
+    fn hash_mode_appends_8_hex_chars() {
+        let input = json!({"email": "alice@example.com"});
+        let out = redact(input, &plan(), &cfg_hash());
+        let val = out["email"].as_str().unwrap();
+        assert!(val.starts_with("[PII:email:"), "got: {val}");
+        let hash_part = val
+            .strip_prefix("[PII:email:")
+            .unwrap()
+            .strip_suffix(']')
+            .unwrap();
+        assert_eq!(hash_part.len(), 8);
+        assert!(hash_part.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn hash_mode_is_deterministic_same_value_same_hash() {
+        let cfg = cfg_hash();
+        let out1 = redact(json!({"email": "alice@example.com"}), &plan(), &cfg);
+        let out2 = redact(json!({"email": "alice@example.com"}), &plan(), &cfg);
+        assert_eq!(out1["email"], out2["email"]);
+    }
+
+    #[test]
+    fn hash_mode_different_values_produce_different_hashes() {
+        let cfg = cfg_hash();
+        let out1 = redact(json!({"email": "alice@example.com"}), &plan(), &cfg);
+        let out2 = redact(json!({"email": "bob@example.com"}), &plan(), &cfg);
+        assert_ne!(out1["email"], out2["email"]);
+    }
+
+    #[test]
+    fn hash_mode_same_value_same_hash_across_columns() {
+        // Two columns with the same raw value should produce the same hash suffix,
+        // enabling cross-column joins.
+        let cfg = cfg_hash();
+        let input = json!({"email": "alice@example.com", "user_email": "alice@example.com"});
+        let out = redact(input, &plan(), &cfg);
+        let e = out["email"].as_str().unwrap();
+        let ue = out["user_email"].as_str().unwrap();
+        // Strip the type prefix to compare just the hash part.
+        let e_hash = e.split(':').last().unwrap().trim_end_matches(']');
+        let ue_hash = ue.split(':').last().unwrap().trim_end_matches(']');
+        assert_eq!(e_hash, ue_hash, "same value must hash identically");
+    }
+
+    #[test]
+    fn hash_mode_different_salts_produce_different_hashes() {
+        let cfg1 = PiiConfig {
+            hash_values: true,
+            hash_salt: "salt-a".to_string(),
+            ..PiiConfig::default()
+        };
+        let cfg2 = PiiConfig {
+            hash_values: true,
+            hash_salt: "salt-b".to_string(),
+            ..PiiConfig::default()
+        };
+        let out1 = redact(json!({"email": "alice@example.com"}), &plan(), &cfg1);
+        let out2 = redact(json!({"email": "alice@example.com"}), &plan(), &cfg2);
+        assert_ne!(out1["email"], out2["email"]);
+    }
+
+    #[test]
+    fn hash_mode_placeholder_is_idempotent() {
+        // A hashed placeholder must not be re-hashed on a second redact pass.
+        let cfg = cfg_hash();
+        let input = json!({"email": "alice@example.com"});
+        let first = redact(input, &plan(), &cfg);
+        let second = redact(first.clone(), &plan(), &cfg);
+        assert_eq!(first["email"], second["email"]);
+    }
+
+    #[test]
+    fn hash_mode_works_with_custom_template() {
+        let cfg = PiiConfig {
+            hash_values: true,
+            hash_salt: "s".to_string(),
+            redaction: "[REDACTED:{type}]".to_string(),
+            ..PiiConfig::default()
+        };
+        let input = json!({"email": "alice@example.com"});
+        let out = redact(input, &plan(), &cfg);
+        let val = out["email"].as_str().unwrap();
+        assert!(val.starts_with("[REDACTED:email:"), "got: {val}");
+        assert!(val.ends_with(']'));
+    }
+
+    #[test]
+    fn hash_mode_off_by_default() {
+        let input = json!({"email": "alice@example.com"});
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["email"], "[PII:email]");
+    }
+
+    #[test]
+    fn hash_mode_luhn_value_is_hashed() {
+        let cfg = cfg_hash();
+        let input = json!({"order_id": "4111111111111111"});
+        let out = redact(input, &plan(), &cfg);
+        let val = out["order_id"].as_str().unwrap();
+        assert!(val.starts_with("[PII:credit_card:"), "got: {val}");
+    }
+
+    #[test]
+    fn hash_mode_summary_types_are_bare_names() {
+        // _gate_summary.types must list the PII type ("email"), not the hash-suffixed token.
+        let cfg = cfg_hash();
+        let input = json!({"email": "alice@example.com", "ssn": "123-45-6789"});
+        let out = redact(input, &plan(), &cfg);
+        let types = out["_gate_summary"]["types"].as_array().unwrap();
+        let type_strs: Vec<&str> = types.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(type_strs.contains(&"email"), "got: {type_strs:?}");
+        assert!(type_strs.contains(&"ssn"), "got: {type_strs:?}");
+        // No hash suffix in the type list.
+        for t in &type_strs {
+            assert!(!t.contains(':'), "type should not contain ':': {t}");
+        }
+    }
+
+    #[test]
+    fn hash_mode_forced_column_value_is_hashed() {
+        // Gate 1 forced-column path (scan_string step 1): value is hashed.
+        let mut p = plan();
+        p.forced_columns
+            .insert("contact".to_string(), "email".to_string());
+        let cfg = cfg_hash();
+        let input = json!({"contact": "not-an-email-at-all"});
+        let out = redact(input, &p, &cfg);
+        let val = out["contact"].as_str().unwrap();
+        assert!(val.starts_with("[PII:email:"), "got: {val}");
+        let hash_part = val
+            .strip_prefix("[PII:email:")
+            .unwrap()
+            .strip_suffix(']')
+            .unwrap();
+        assert_eq!(hash_part.len(), 8);
+        assert!(hash_part.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn hash_mode_jsonb_inner_values_hashed() {
+        // JSONB scan path (scan_string step 4): inner values are hashed.
+        let cfg = cfg_hash();
+        let input = json!({"profile": "{\"email\": \"alice@example.com\"}"});
+        let out = redact(input, &plan(), &cfg);
+        let profile_str = out["profile"].as_str().unwrap();
+        let profile: Value = serde_json::from_str(profile_str).unwrap();
+        let val = profile["email"].as_str().unwrap();
+        assert!(val.starts_with("[PII:email:"), "got: {val}");
+        assert_eq!(out["_gate_summary"]["redacted"], 1);
+    }
+
+    #[test]
+    fn hash_mode_empty_salt_produces_valid_hash() {
+        let cfg = PiiConfig {
+            hash_values: true,
+            hash_salt: String::new(),
+            ..PiiConfig::default()
+        };
+        let out = redact(json!({"email": "alice@example.com"}), &plan(), &cfg);
+        let val = out["email"].as_str().unwrap();
+        assert!(val.starts_with("[PII:email:"), "got: {val}");
+        let hash_part = val
+            .strip_prefix("[PII:email:")
+            .unwrap()
+            .strip_suffix(']')
+            .unwrap();
+        assert_eq!(hash_part.len(), 8);
+    }
+
+    #[test]
+    fn hash_mode_regex_path_value_is_hashed() {
+        // Regex scan path (scan_string step 6): SSN matched by pattern, value is hashed.
+        let cfg = cfg_hash();
+        let input = json!({"data": "123-45-6789"});
+        let out = redact(input, &plan(), &cfg);
+        let val = out["data"].as_str().unwrap();
+        assert!(val.starts_with("[PII:ssn:"), "got: {val}");
     }
 }
