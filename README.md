@@ -1,6 +1,19 @@
-# redact
+<p align="center">
+  <img src="assets/banner.png" alt="redact" width="600">
+</p>
 
-PII-filtering CLI that transparently intercepts AI agent query commands and redacts sensitive data before it reaches the model context.
+<p align="center">
+  <strong>PII-filtering CLI that transparently intercepts AI agent query commands and redacts sensitive data before it reaches the model context.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/GaaraZhu/redact/actions"><img src="https://github.com/GaaraZhu/redact/workflows/CI/badge.svg" alt="CI"></a>
+  <a href="https://github.com/GaaraZhu/redact/releases"><img src="https://img.shields.io/github/v/release/GaaraZhu/redact" alt="Release"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://github.com/GaaraZhu/homebrew-redact"><img src="https://img.shields.io/badge/homebrew-tap-orange?logo=homebrew" alt="Homebrew"></a>
+</p>
+
+---
 
 AI coding agents that access internal data sources can inadvertently exfiltrate PII — whether querying a database or calling an internal API. A single `SELECT *` or `curl` against an internal service can expose emails, SSNs, and payment data directly into the model's context window — and from there into logs, prompts, and training pipelines. `redact` stops this without requiring any changes to the AI's prompts or tools.
 
@@ -8,11 +21,11 @@ AI coding agents that access internal data sources can inadvertently exfiltrate 
 
 **Claude Code** — the agent asked for all users in plain English; `redact` intercepted the query and returned all columns with `email` and `credit_card` masked before they reached the model context.
 
-![redact blocking PII in a Claude Code session using tkpsql](docs/demo-claude-code.jpg)
+![redact blocking PII in a Claude Code session using tkpsql](assets/demo-claude-code.jpg)
 
 **opencode** — same query, same two-gate redaction pipeline, different harness. The `email` and `credit_card` columns are replaced with `[PII:email]` and `[PII:credit_card]` before the model sees the result.
 
-![redact blocking PII in an opencode session using tkpsql](docs/demo-opencode.jpg)
+![redact blocking PII in an opencode session using tkpsql](assets/demo-opencode.jpg)
 
 ## How it works
 
@@ -205,3 +218,24 @@ Redacted output preserves the original JSON structure. PII values are replaced w
 ```
 
 Error responses from the underlying tool pass through unchanged.
+
+## Contributing
+
+Bug reports and pull requests are welcome. For significant changes, open an issue first to discuss the proposal.
+
+```bash
+cargo build
+cargo test --all
+cargo clippy -- -D warnings
+cargo fmt --check
+```
+
+All four checks must pass before submitting a PR.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## Disclaimer
+
+See [DISCLAIMER.md](DISCLAIMER.md).
