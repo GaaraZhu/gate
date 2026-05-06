@@ -21,9 +21,10 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           sed -i '' "s/^version = \".*\"/version = \"${VERSION}\"/" crates/gate/Cargo.toml
+          cargo generate-lockfile
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add crates/gate/Cargo.toml
+          git add crates/gate/Cargo.toml Cargo.lock
           git diff --cached --quiet || git commit -m "chore: bump version to ${VERSION}"
           git push origin main
 
