@@ -1,8 +1,8 @@
 # Dev environment
 
-Local Postgres setup for testing `redact` end-to-end against real data.
+Local Postgres setup for testing `gate` end-to-end against real data.
 
-`psql-json` is a thin wrapper around `psql` that outputs a JSON array — it stands in for `tkpsql`/`tkdbr` in a real deployment. The hook flow is identical: the AI calls `psql-json`, the `PreToolUse` hook intercepts and rewrites to `redact run -- psql-json ...`, and the model sees only the redacted JSON.
+`psql-json` is a thin wrapper around `psql` that outputs a JSON array — it stands in for `tkpsql`/`tkdbr` in a real deployment. The hook flow is identical: the AI calls `psql-json`, the `PreToolUse` hook intercepts and rewrites to `gate run -- psql-json ...`, and the model sees only the redacted JSON.
 
 ## Prerequisites
 
@@ -22,9 +22,9 @@ Follow the printed instructions. In short:
 
 ```sh
 export PATH="$(pwd)/target/release:$(pwd)/dev:$PATH"
-export REDACT_CONFIG="$(pwd)/dev/config.yaml"
+export GATE_CONFIG="$(pwd)/dev/config.yaml"
 
-redact init        # register the hook in ~/.claude/settings.json (run outside Claude Code)
+gate init        # register the hook in ~/.claude/settings.json (run outside Claude Code)
 ```
 
 Restart Claude Code so the hook takes effect.
@@ -35,24 +35,24 @@ Restart Claude Code so the hook takes effect.
 # Raw output — PII fully visible
 psql-json --sql "SELECT id, first_name, email, ssn, credit_card FROM users"
 
-# Through redact — PII replaced with typed placeholders
-redact run -- psql-json --sql "SELECT id, first_name, email, ssn, credit_card FROM users"
+# Through gate — PII replaced with typed placeholders
+gate run -- psql-json --sql "SELECT id, first_name, email, ssn, credit_card FROM users"
 
 # Joins work fine; Gate 2 catches PII regardless of table
-redact run -- psql-json --sql "
+gate run -- psql-json --sql "
   SELECT u.email, u.phone, o.product, o.amount
   FROM users u JOIN orders o ON o.user_id = u.id"
 
 # SELECT * is rejected by Gate 1 (wildcard_policy: reject)
-redact run -- psql-json --sql "SELECT * FROM users"
+gate run -- psql-json --sql "SELECT * FROM users"
 
 # Allow SELECT * by setting wildcard_policy: warn in config, then:
-redact run -- psql-json --sql "SELECT * FROM orders"
+gate run -- psql-json --sql "SELECT * FROM orders"
 ```
 
 ## Full hook demo inside Claude Code
 
-With `redact init` done and Claude Code restarted, ask the AI:
+With `gate init` done and Claude Code restarted, ask the AI:
 
 > Run `psql-json --sql "SELECT id, first_name, email, ssn, credit_card FROM users"`
 

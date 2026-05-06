@@ -1,4 +1,4 @@
--- Demo database for redact end-to-end testing.
+-- Demo database for gate end-to-end testing.
 -- All data is synthetic — emails and card numbers are fake.
 
 CREATE TABLE users (

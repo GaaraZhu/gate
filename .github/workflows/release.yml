@@ -20,10 +20,10 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          sed -i '' "s/^version = \".*\"/version = \"${VERSION}\"/" crates/redact/Cargo.toml
+          sed -i '' "s/^version = \".*\"/version = \"${VERSION}\"/" crates/gate/Cargo.toml
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add crates/redact/Cargo.toml
+          git add crates/gate/Cargo.toml
           git diff --cached --quiet || git commit -m "chore: bump version to ${VERSION}"
           git push origin main
 
@@ -38,8 +38,8 @@ jobs:
 
       - name: Package
         run: |
-          ARCHIVE="redact-${VERSION}-aarch64-apple-darwin.tar.gz"
-          tar -czf "${ARCHIVE}" -C target/aarch64-apple-darwin/release redact
+          ARCHIVE="gate-${VERSION}-aarch64-apple-darwin.tar.gz"
+          tar -czf "${ARCHIVE}" -C target/aarch64-apple-darwin/release gate
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
 
       - name: Compute SHA256
@@ -55,7 +55,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          printf '## SHA256 (for homebrew-redact formula)\n```\n%s  %s\n```\n' \
+          printf '## SHA256 (for homebrew-gate formula)\n```\n%s  %s\n```\n' \
             "${SHA256}" "${ARCHIVE}" > release_notes.md
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
@@ -66,16 +66,16 @@ jobs:
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/GaaraZhu/homebrew-redact.git
-          cd homebrew-redact
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/GaaraZhu/homebrew-gate.git
+          cd homebrew-gate
           sed -i '' \
-            "s|url \".*\"|url \"https://github.com/GaaraZhu/redact/releases/download/${GITHUB_REF_NAME}/redact-${VERSION}-aarch64-apple-darwin.tar.gz\"|" \
-            Formula/redact.rb
+            "s|url \".*\"|url \"https://github.com/GaaraZhu/gate/releases/download/${GITHUB_REF_NAME}/gate-${VERSION}-aarch64-apple-darwin.tar.gz\"|" \
+            Formula/gate.rb
           sed -i '' \
             "s|sha256 \".*\"|sha256 \"${SHA256}\"|" \
-            Formula/redact.rb
+            Formula/gate.rb
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/redact.rb
-          git commit -m "chore: update redact to ${GITHUB_REF_NAME}"
+          git add Formula/gate.rb
+          git commit -m "chore: update gate to ${GITHUB_REF_NAME}"
           git push

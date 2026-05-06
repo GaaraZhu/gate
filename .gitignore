@@ -1,7 +1,7 @@
 # Rust
 /target/
 
-# Claude Code local settings (use `redact init` to set up hooks)
+# Claude Code local settings (use `gate init` to set up hooks)
 .claude/
 
 # Editor

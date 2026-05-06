@@ -25,9 +25,9 @@ fi
 
 PGHOST="${PGHOST:-localhost}"
 PGPORT="${PGPORT:-5432}"
-PGUSER="${PGUSER:-redact}"
-PGPASSWORD="${PGPASSWORD:-redact}"
-PGDATABASE="${PGDATABASE:-redact_demo}"
+PGUSER="${PGUSER:-gate}"
+PGPASSWORD="${PGPASSWORD:-gate}"
+PGDATABASE="${PGDATABASE:-gate_demo}"
 
 SQL=""
 while [[ $# -gt 0 ]]; do
