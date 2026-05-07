@@ -34,11 +34,20 @@ impl RedactPlan {
 
 // ── Internal types ────────────────────────────────────────────────────────────
 
+/// Candidate key names for the column-headers array (all-strings).
+const COL_KEYS: &[&str] = &["columns", "headers", "keys", "fields"];
+/// Candidate key names for the data-rows array (all-arrays).
+const ROW_KEYS: &[&str] = &["rows", "records", "results", "data"];
+
 #[derive(PartialEq)]
 enum Shape {
     Error,
-    /// {columns:[...], rows:[[...]]} — columnar, array-of-arrays rows
-    Columnar,
+    /// Object with an all-strings column-header array and an all-arrays row array.
+    /// Carries the detected field names so redact_columnar doesn't re-scan.
+    Columnar {
+        col_field: &'static str,
+        row_field: &'static str,
+    },
     Object,
     Array,
     Other,
@@ -84,9 +93,15 @@ pub fn redact(payload: Value, plan: &RedactPlan, config: &PiiConfig) -> Value {
     let effective_names = config.effective_column_names();
     let mut summary = RedactSummary::new();
 
-    let redacted_payload = if shape == Shape::Columnar {
+    let redacted_payload = if let Shape::Columnar {
+        col_field,
+        row_field,
+    } = &shape
+    {
         redact_columnar(
             payload,
+            col_field,
+            row_field,
             plan,
             config,
             &patterns,
@@ -114,24 +129,34 @@ pub fn redact(payload: Value, plan: &RedactPlan, config: &PiiConfig) -> Value {
 
 // ── Shape detection ───────────────────────────────────────────────────────────
 
+/// Scan the map for a columnar shape using any of the accepted alias key names.
+/// Returns `(col_field, row_field)` on success.
+fn find_columnar_keys(map: &Map<String, Value>) -> Option<(&'static str, &'static str)> {
+    let col_field = COL_KEYS.iter().copied().find(|&k| {
+        map.get(k)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().all(|v| v.is_string()))
+            .unwrap_or(false)
+    })?;
+    let row_field = ROW_KEYS.iter().copied().find(|&k| {
+        map.get(k)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().all(|v| v.is_array()))
+            .unwrap_or(false)
+    })?;
+    Some((col_field, row_field))
+}
+
 fn detect_shape(val: &Value) -> Shape {
     match val {
         Value::Object(map) => match map.get("error") {
             Some(Value::String(s)) if !s.is_empty() => Shape::Error,
             _ => {
-                // Columnar: has a "columns" array-of-strings and a "rows" array-of-arrays.
-                let has_columns = map
-                    .get("columns")
-                    .and_then(Value::as_array)
-                    .map(|a| a.iter().all(|v| v.is_string()))
-                    .unwrap_or(false);
-                let has_array_rows = map
-                    .get("rows")
-                    .and_then(Value::as_array)
-                    .map(|a| a.iter().all(|v| v.is_array()))
-                    .unwrap_or(false);
-                if has_columns && has_array_rows {
-                    Shape::Columnar
+                if let Some((col_field, row_field)) = find_columnar_keys(map) {
+                    Shape::Columnar {
+                        col_field,
+                        row_field,
+                    }
                 } else {
                     Shape::Object
                 }
@@ -155,7 +180,7 @@ fn apply_summary(
     }
     let sv = summary.to_value();
     match shape {
-        Shape::Object | Shape::Columnar => {
+        Shape::Object | Shape::Columnar { .. } => {
             if let Value::Object(mut map) = payload {
                 map.insert("_gate_summary".to_string(), sv);
                 Value::Object(map)
@@ -172,11 +197,14 @@ fn apply_summary(
 
 // ── Columnar redaction ────────────────────────────────────────────────────────
 
-/// Redact a `{columns:[...], rows:[[...]]}` payload.
+/// Redact a columnar payload `{<col_field>:[...], <row_field>:[[...]]}`.
 /// Each value in every row array is scanned using its positional column name.
-/// All other top-level fields (e.g. "count", "_gate_summary") are walked normally.
+/// All other top-level fields (e.g. "count") are walked normally.
+#[allow(clippy::too_many_arguments)]
 fn redact_columnar(
     payload: Value,
+    col_field: &str,
+    row_field: &str,
     plan: &RedactPlan,
     config: &PiiConfig,
     patterns: &[CompiledPattern],
@@ -187,9 +215,9 @@ fn redact_columnar(
         unreachable!("columnar shape is always an object");
     };
 
-    // Extract the column names (already validated as strings by detect_shape).
+    // Extract the column header names (already validated as strings by detect_shape).
     let col_names: Vec<String> = map
-        .get("columns")
+        .get(col_field)
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
@@ -199,7 +227,7 @@ fn redact_columnar(
         .unwrap_or_default();
 
     // Redact the rows array-of-arrays positionally.
-    if let Some(Value::Array(rows)) = map.remove("rows") {
+    if let Some(Value::Array(rows)) = map.remove(row_field) {
         let new_rows: Vec<Value> = rows
             .into_iter()
             .map(|row| {
@@ -209,10 +237,10 @@ fn redact_columnar(
                             .into_iter()
                             .enumerate()
                             .map(|(i, cell)| {
-                                let col_key = col_names.get(i).map(String::as_str);
+                                let col_name = col_names.get(i).map(String::as_str);
                                 walk(
                                     cell,
-                                    col_key,
+                                    col_name,
                                     plan,
                                     config,
                                     patterns,
@@ -228,10 +256,10 @@ fn redact_columnar(
                 }
             })
             .collect();
-        map.insert("rows".to_string(), Value::Array(new_rows));
+        map.insert(row_field.to_string(), Value::Array(new_rows));
     }
 
-    // Walk all other top-level fields normally (e.g. "count", "columns").
+    // Walk all other top-level fields normally (e.g. "count", col_field itself).
     let new_map: Map<String, Value> = map
         .into_iter()
         .map(|(k, v)| {
@@ -1149,5 +1177,67 @@ mod tests {
         // The email key inside the object row WILL be matched by column classification.
         let out = redact(input, &plan(), &cfg());
         assert_eq!(out["rows"][0]["email"], "[PII:email]");
+    }
+
+    // ── 18. Columnar alias key names ─────────────────────────────────────────
+
+    #[test]
+    fn columnar_alias_headers_records() {
+        let input = json!({
+            "headers": ["email", "id"],
+            "records": [["alice@example.com", "1"], ["bob@example.com", "2"]]
+        });
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["records"][0][0], "[PII:email]");
+        assert_eq!(out["records"][0][1], "1");
+        assert_eq!(out["records"][1][0], "[PII:email]");
+        assert_eq!(out["headers"][0], "email");
+        assert_eq!(out["_gate_summary"]["redacted"], 2);
+    }
+
+    #[test]
+    fn columnar_alias_keys_results() {
+        let input = json!({
+            "keys": ["ssn", "first_name"],
+            "results": [["123-45-6789", "Alice"]]
+        });
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["results"][0][0], "[PII:ssn]");
+        assert_eq!(out["results"][0][1], "[PII:name]");
+        assert_eq!(out["_gate_summary"]["redacted"], 2);
+    }
+
+    #[test]
+    fn columnar_alias_fields_data() {
+        let input = json!({
+            "fields": ["email"],
+            "data": [["alice@example.com"]]
+        });
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["data"][0][0], "[PII:email]");
+        assert_eq!(out["fields"][0], "email");
+        assert_eq!(out["_gate_summary"]["redacted"], 1);
+    }
+
+    #[test]
+    fn plain_object_not_mistaken_for_columnar() {
+        // {"name": "gary"} has no col_field/row_field pair — must go through normal Object walk.
+        let input = json!({"name": "gary"});
+        let out = redact(input, &plan(), &cfg());
+        // "name" alone is not a PII column trigger; value passes through unchanged.
+        assert_eq!(out["name"], "gary");
+        // No "rows" or "headers" key must be injected.
+        assert!(out.get("rows").is_none());
+        assert!(out.get("headers").is_none());
+    }
+
+    #[test]
+    fn object_with_data_but_no_col_field_not_columnar() {
+        // "data" alone (no matching all-strings column key) → Object walk, not columnar.
+        let input = json!({"status": "ok", "data": [["a", "b"]]});
+        let out = redact(input, &plan(), &cfg());
+        // Processed as Object: data array contents are walked as-is (strings in arrays).
+        assert_eq!(out["status"], "ok");
+        assert_eq!(out["data"][0][0], "a");
     }
 }
