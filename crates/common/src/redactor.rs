@@ -17,6 +17,8 @@ pub struct RedactPlan {
     /// True when Gate 1 already exited with an error (action = reject).
     /// In that case `redact()` should never be called.
     pub rejected: bool,
+    /// When true, Gate 2 prints per-field redaction decisions to stderr.
+    pub verbose: bool,
 }
 
 impl RedactPlan {
@@ -25,6 +27,7 @@ impl RedactPlan {
             forced_columns: HashMap::new(),
             warnings: Vec::new(),
             rejected: false,
+            verbose: false,
         }
     }
 }
@@ -186,6 +189,9 @@ fn scan_string(
     effective_names: &[String],
     summary: &mut RedactSummary,
 ) -> Value {
+    let vb = plan.verbose;
+    let kname = key.unwrap_or("?");
+
     // Idempotency: skip already-redacted placeholders so a second pass doesn't
     // inflate the summary count.
     if is_redaction_placeholder(&s, &config.redaction) {
@@ -197,6 +203,14 @@ fn scan_string(
     // 1. Gate 1 forced columns (keys are pre-lowercased by Gate 1).
     if let Some(ref k) = key_lower {
         if let Some(type_label) = plan.forced_columns.get(k.as_str()) {
+            if vb {
+                eprintln!(
+                    "[gate] field {:?} = {:?} → REDACTED (step: forced_column, type: {})",
+                    kname,
+                    truncate_val(&s),
+                    type_label
+                );
+            }
             return do_redact(type_label, &s, config, summary);
         }
     }
@@ -205,6 +219,14 @@ fn scan_string(
     //    Force-redacts any value under a PII-named key, regardless of content.
     if let Some(k) = key {
         if let Some(pii_type) = classify_column(k) {
+            if vb {
+                eprintln!(
+                    "[gate] field {:?} = {:?} → REDACTED (step: column_classify, type: {})",
+                    kname,
+                    truncate_val(&s),
+                    pii_type
+                );
+            }
             return do_redact(pii_type, &s, config, summary);
         }
     }
@@ -213,6 +235,14 @@ fn scan_string(
     //    Covers user-supplied column names not handled by the synonym table.
     if let Some(ref k) = key_lower {
         if effective_names.iter().any(|n| n == k) {
+            if vb {
+                eprintln!(
+                    "[gate] field {:?} = {:?} → REDACTED (step: column_name_exact, type: {})",
+                    kname,
+                    truncate_val(&s),
+                    k
+                );
+            }
             return do_redact(k.as_str(), &s, config, summary);
         }
     }
@@ -223,6 +253,13 @@ fn scan_string(
             let count_before = summary.redacted;
             let walked = walk(inner, key, plan, config, patterns, effective_names, summary);
             if summary.redacted > count_before {
+                if vb {
+                    eprintln!(
+                        "[gate] field {:?} (jsonb) → REDACTED ({} field(s) inside)",
+                        kname,
+                        summary.redacted - count_before
+                    );
+                }
                 return Value::String(serde_json::to_string(&walked).unwrap_or(s));
             }
             return Value::String(s);
@@ -231,6 +268,13 @@ fn scan_string(
 
     // 5. Luhn check — always redacts Luhn-valid card-shaped strings.
     if Luhn::check(&s) {
+        if vb {
+            eprintln!(
+                "[gate] field {:?} = {:?} → REDACTED (step: luhn, type: credit_card)",
+                kname,
+                truncate_val(&s)
+            );
+        }
         return do_redact("credit_card", &s, config, summary);
     }
 
@@ -247,21 +291,56 @@ fn scan_string(
     }
     if let Some((name, score)) = best {
         if score >= config.confidence_threshold {
+            if vb {
+                eprintln!(
+                    "[gate] field {:?} = {:?} → REDACTED (step: regex, pattern: {}, score: {:.2})",
+                    kname,
+                    truncate_val(&s),
+                    name,
+                    score
+                );
+            }
             return do_redact(name, &s, config, summary);
         }
         // Low-confidence: warn but do not redact. Raw value is intentionally excluded.
+        if vb {
+            eprintln!(
+                "[gate] field {:?} = {:?} → warned (step: regex, pattern: {}, score: {:.2} < threshold: {:.2})",
+                kname,
+                truncate_val(&s),
+                name,
+                score,
+                config.confidence_threshold
+            );
+        }
         summary.warnings.push(format!(
             "low-confidence match: key={} pattern={} score={:.2}",
             key.unwrap_or("?"),
             name,
             score,
         ));
+    } else if vb {
+        eprintln!(
+            "[gate] field {:?} = {:?} → passed (no match)",
+            kname,
+            truncate_val(&s)
+        );
     }
 
     Value::String(s)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn truncate_val(s: &str) -> String {
+    const MAX: usize = 60;
+    if s.chars().count() > MAX {
+        let truncated: String = s.chars().take(MAX).collect();
+        format!("{truncated}...")
+    } else {
+        s.to_string()
+    }
+}
 
 fn do_redact(
     pii_type: &str,

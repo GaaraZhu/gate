@@ -12,7 +12,7 @@ fn is_disabled_by_env() -> bool {
         .unwrap_or(false)
 }
 
-pub fn run(args: Vec<String>) {
+pub fn run(args: Vec<String>, verbose: bool) {
     if args.is_empty() {
         exit_with_error("gate run: no command specified. Usage: gate run -- <tool> [args...]");
     }
@@ -56,7 +56,29 @@ pub fn run(args: Vec<String>) {
     };
 
     // Gate 1: build redact plan from SQL if tool has sql_arg configured
-    let plan = build_gate1_plan(cmd_args, &basename, &config);
+    let mut plan = build_gate1_plan(cmd_args, &basename, &config);
+
+    if verbose {
+        eprintln!("[gate] === Gate 1 ===");
+        if plan.forced_columns.is_empty() {
+            eprintln!("[gate] forced columns: none");
+        } else {
+            let mut cols: Vec<_> = plan.forced_columns.iter().collect();
+            cols.sort_by_key(|(k, _)| k.as_str());
+            for (col, pii_type) in cols {
+                eprintln!("[gate] forced column: {} → {}", col, pii_type);
+            }
+        }
+        if plan.warnings.is_empty() {
+            eprintln!("[gate] warnings: none");
+        } else {
+            for w in &plan.warnings {
+                eprintln!("[gate] warning: {}", w);
+            }
+        }
+        eprintln!("[gate] === Gate 2: per-field decisions ===");
+    }
+    plan.verbose = verbose;
 
     if plan.rejected {
         exit_with_error(

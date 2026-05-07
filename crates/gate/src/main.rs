@@ -29,6 +29,9 @@ enum Commands {
     Hook,
     /// Execute a tool with Gate 1 + Gate 2 PII redaction on its JSON output
     Run {
+        /// Print per-field redaction decisions to stderr for debugging
+        #[arg(long)]
+        verbose: bool,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -71,7 +74,7 @@ fn main() {
     let cli = Cli::parse();
     match cli.command {
         Commands::Hook => hook::run(),
-        Commands::Run { args } => run::run(args),
+        Commands::Run { verbose, args } => run::run(args, verbose),
         Commands::Init { harness, scope } => init::run(&harness, &scope),
         Commands::Config {
             path,
