@@ -37,6 +37,8 @@ impl RedactPlan {
 #[derive(PartialEq)]
 enum Shape {
     Error,
+    /// {columns:[...], rows:[[...]]} — columnar, array-of-arrays rows
+    Columnar,
     Object,
     Array,
     Other,
@@ -82,15 +84,19 @@ pub fn redact(payload: Value, plan: &RedactPlan, config: &PiiConfig) -> Value {
     let effective_names = config.effective_column_names();
     let mut summary = RedactSummary::new();
 
-    let redacted_payload = walk(
-        payload,
-        None,
-        plan,
-        config,
-        &patterns,
-        &effective_names,
-        &mut summary,
-    );
+    let redacted_payload = if shape == Shape::Columnar {
+        redact_columnar(payload, plan, config, &patterns, &effective_names, &mut summary)
+    } else {
+        walk(
+            payload,
+            None,
+            plan,
+            config,
+            &patterns,
+            &effective_names,
+            &mut summary,
+        )
+    };
 
     for w in &plan.warnings {
         summary.warnings.push(w.clone());
@@ -105,7 +111,24 @@ fn detect_shape(val: &Value) -> Shape {
     match val {
         Value::Object(map) => match map.get("error") {
             Some(Value::String(s)) if !s.is_empty() => Shape::Error,
-            _ => Shape::Object,
+            _ => {
+                // Columnar: has a "columns" array-of-strings and a "rows" array-of-arrays.
+                let has_columns = map
+                    .get("columns")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().all(|v| v.is_string()))
+                    .unwrap_or(false);
+                let has_array_rows = map
+                    .get("rows")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().all(|v| v.is_array()))
+                    .unwrap_or(false);
+                if has_columns && has_array_rows {
+                    Shape::Columnar
+                } else {
+                    Shape::Object
+                }
+            }
         },
         Value::Array(_) => Shape::Array,
         _ => Shape::Other,
@@ -125,7 +148,7 @@ fn apply_summary(
     }
     let sv = summary.to_value();
     match shape {
-        Shape::Object => {
+        Shape::Object | Shape::Columnar => {
             if let Value::Object(mut map) = payload {
                 map.insert("_gate_summary".to_string(), sv);
                 Value::Object(map)
@@ -138,6 +161,71 @@ fn apply_summary(
         }
         _ => payload,
     }
+}
+
+// ── Columnar redaction ────────────────────────────────────────────────────────
+
+/// Redact a `{columns:[...], rows:[[...]]}` payload.
+/// Each value in every row array is scanned using its positional column name.
+/// All other top-level fields (e.g. "count", "_gate_summary") are walked normally.
+fn redact_columnar(
+    payload: Value,
+    plan: &RedactPlan,
+    config: &PiiConfig,
+    patterns: &[CompiledPattern],
+    effective_names: &[String],
+    summary: &mut RedactSummary,
+) -> Value {
+    let Value::Object(mut map) = payload else {
+        unreachable!("columnar shape is always an object");
+    };
+
+    // Extract the column names (already validated as strings by detect_shape).
+    let col_names: Vec<String> = map
+        .get("columns")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|v| v.as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Redact the rows array-of-arrays positionally.
+    if let Some(Value::Array(rows)) = map.remove("rows") {
+        let new_rows: Vec<Value> = rows
+            .into_iter()
+            .map(|row| {
+                if let Value::Array(cells) = row {
+                    Value::Array(
+                        cells
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, cell)| {
+                                let col_key = col_names.get(i).map(String::as_str);
+                                walk(cell, col_key, plan, config, patterns, effective_names, summary)
+                            })
+                            .collect(),
+                    )
+                } else {
+                    // Non-array row: walk without column context
+                    walk(row, None, plan, config, patterns, effective_names, summary)
+                }
+            })
+            .collect();
+        map.insert("rows".to_string(), Value::Array(new_rows));
+    }
+
+    // Walk all other top-level fields normally (e.g. "count", "columns").
+    let new_map: Map<String, Value> = map
+        .into_iter()
+        .map(|(k, v)| {
+            let new_v = walk(v, Some(k.as_str()), plan, config, patterns, effective_names, summary);
+            (k, new_v)
+        })
+        .collect();
+
+    Value::Object(new_map)
 }
 
 // ── Tree walk ─────────────────────────────────────────────────────────────────
@@ -943,4 +1031,101 @@ mod tests {
         let val = out["data"].as_str().unwrap();
         assert!(val.starts_with("[PII:ssn:"), "got: {val}");
     }
+
+    // ── 17. Columnar shape {columns:[...], rows:[[...]]} ─────────────────────
+
+    #[test]
+    fn columnar_shape_redacts_pii_columns_by_position() {
+        let input = json!({
+            "columns": ["client_id", "first_names", "last_name", "date_of_birth"],
+            "count": 2,
+            "rows": [
+                ["37a7c4c8-d55b-4a4a-a47f-778ceabbfbaa", "Alice", "Smith", "1990-01-01"],
+                ["86eb7438-677f-45a2-bbe6-eca90f502966", "Bob Jones", "Taylor", null]
+            ]
+        });
+        let out = redact(input, &plan(), &cfg());
+        // client_id: uuid — no PII classification, must pass through
+        assert_eq!(out["rows"][0][0], "37a7c4c8-d55b-4a4a-a47f-778ceabbfbaa");
+        // first_names → name
+        assert_eq!(out["rows"][0][1], "[PII:name]");
+        // last_name → name
+        assert_eq!(out["rows"][0][2], "[PII:name]");
+        // date_of_birth → dob
+        assert_eq!(out["rows"][0][3], "[PII:dob]");
+        // second row
+        assert_eq!(out["rows"][1][1], "[PII:name]");
+        assert_eq!(out["rows"][1][2], "[PII:name]");
+        // null stays null
+        assert!(out["rows"][1][3].is_null());
+        // summary
+        assert_eq!(out["_gate_summary"]["redacted"], 5);
+    }
+
+    #[test]
+    fn columnar_shape_non_pii_columns_pass_through() {
+        let input = json!({
+            "columns": ["id", "status", "amount"],
+            "rows": [["1", "active", "99.99"]]
+        });
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["rows"][0][0], "1");
+        assert_eq!(out["rows"][0][1], "active");
+        assert_eq!(out["rows"][0][2], "99.99");
+        assert_eq!(out["_gate_summary"]["redacted"], 0);
+    }
+
+    #[test]
+    fn columnar_shape_preserves_count_and_columns_fields() {
+        let input = json!({
+            "columns": ["email"],
+            "count": 1,
+            "rows": [["alice@example.com"]]
+        });
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["count"], 1);
+        // columns array itself is preserved
+        assert_eq!(out["columns"][0], "email");
+        assert_eq!(out["rows"][0][0], "[PII:email]");
+    }
+
+    #[test]
+    fn columnar_shape_empty_rows_ok() {
+        let input = json!({
+            "columns": ["email", "ssn"],
+            "rows": []
+        });
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["_gate_summary"]["redacted"], 0);
+        assert!(out["rows"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn columnar_shape_with_existing_gate_summary_replaced() {
+        // The input already has a _gate_summary (e.g. piped from a tool) — our new
+        // summary must replace it correctly.
+        let input = json!({
+            "columns": ["first_names", "last_name"],
+            "rows": [["Gary", "Zhu"]],
+            "_gate_summary": {"redacted": 0, "types": [], "warnings": []}
+        });
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["rows"][0][0], "[PII:name]");
+        assert_eq!(out["rows"][0][1], "[PII:name]");
+        assert_eq!(out["_gate_summary"]["redacted"], 2);
+    }
+
+    #[test]
+    fn columnar_shape_object_rows_not_detected_as_columnar() {
+        // rows with objects → not columnar shape; falls back to normal Object walk.
+        let input = json!({
+            "columns": ["email"],
+            "rows": [{"email": "alice@example.com"}]
+        });
+        // rows[0] is an object, so it should NOT be treated as columnar.
+        // The email key inside the object row WILL be matched by column classification.
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["rows"][0]["email"], "[PII:email]");
+    }
+
 }
