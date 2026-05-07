@@ -85,7 +85,14 @@ pub fn redact(payload: Value, plan: &RedactPlan, config: &PiiConfig) -> Value {
     let mut summary = RedactSummary::new();
 
     let redacted_payload = if shape == Shape::Columnar {
-        redact_columnar(payload, plan, config, &patterns, &effective_names, &mut summary)
+        redact_columnar(
+            payload,
+            plan,
+            config,
+            &patterns,
+            &effective_names,
+            &mut summary,
+        )
     } else {
         walk(
             payload,
@@ -203,7 +210,15 @@ fn redact_columnar(
                             .enumerate()
                             .map(|(i, cell)| {
                                 let col_key = col_names.get(i).map(String::as_str);
-                                walk(cell, col_key, plan, config, patterns, effective_names, summary)
+                                walk(
+                                    cell,
+                                    col_key,
+                                    plan,
+                                    config,
+                                    patterns,
+                                    effective_names,
+                                    summary,
+                                )
                             })
                             .collect(),
                     )
@@ -220,7 +235,15 @@ fn redact_columnar(
     let new_map: Map<String, Value> = map
         .into_iter()
         .map(|(k, v)| {
-            let new_v = walk(v, Some(k.as_str()), plan, config, patterns, effective_names, summary);
+            let new_v = walk(
+                v,
+                Some(k.as_str()),
+                plan,
+                config,
+                patterns,
+                effective_names,
+                summary,
+            );
             (k, new_v)
         })
         .collect();
@@ -1127,5 +1150,4 @@ mod tests {
         let out = redact(input, &plan(), &cfg());
         assert_eq!(out["rows"][0]["email"], "[PII:email]");
     }
-
 }
