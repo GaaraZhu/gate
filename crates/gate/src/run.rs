@@ -104,6 +104,8 @@ pub fn run(args: Vec<String>, verbose: bool) {
         spawn_args.extend_from_slice(extra);
     }
 
+    inject_curl_silent(&spawn_binary, &mut spawn_args);
+
     let pipe_cmd = tool_cfg.and_then(|t| t.pipe.as_deref());
 
     // Spawn subprocess; stderr passes through unchanged
@@ -279,6 +281,55 @@ fn passthrough(args: Vec<String>) {
     std::process::exit(status.code().unwrap_or(1));
 }
 
+/// Inject `-s` (silent) into curl invocations if not already present, suppressing
+/// curl's progress meter which otherwise appears on stderr during piped output.
+/// Handles direct `curl` calls and shell interpreter `-c` strings (e.g. `sh -c "curl ..."`).
+fn inject_curl_silent(binary: &str, args: &mut Vec<String>) {
+    let basename = command::token_basename(binary);
+    if basename == "curl" {
+        if !curl_has_silent_flag(args.iter().map(String::as_str)) {
+            args.insert(0, "-s".to_string());
+        }
+        return;
+    }
+    if matches!(basename.as_str(), "sh" | "bash" | "zsh" | "dash") {
+        let mut i = 0;
+        while i < args.len() {
+            if args[i] == "-c" {
+                if let Some(shell_str) = args.get_mut(i + 1) {
+                    *shell_str = rewrite_curl_in_shell_str(shell_str);
+                }
+                return;
+            }
+            i += 1;
+        }
+    }
+}
+
+/// Returns true if any arg token represents a curl silent flag (`-s`, `--silent`,
+/// or a combined short flag containing `s` such as `-fsSL`).
+fn curl_has_silent_flag<'a>(mut args: impl Iterator<Item = &'a str>) -> bool {
+    args.any(|a| {
+        a == "--silent" || (a.starts_with('-') && !a.starts_with("--") && a[1..].contains('s'))
+    })
+}
+
+/// Rewrite a shell command string by injecting `-s` after each `curl` invocation
+/// that doesn't already have a silent flag.
+fn rewrite_curl_in_shell_str(s: &str) -> String {
+    use regex::Regex;
+    let re = Regex::new(r"\bcurl\b([^|;&\n]*)").unwrap();
+    re.replace_all(s, |caps: &regex::Captures| {
+        let after = &caps[1];
+        if curl_has_silent_flag(after.split_whitespace()) {
+            caps[0].to_string()
+        } else {
+            format!("curl -s{after}")
+        }
+    })
+    .into_owned()
+}
+
 /// Find the value of `flag` in `args`, supporting both `--flag VALUE` and `--flag=VALUE`.
 fn find_flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     let prefix = format!("{flag}=");
@@ -291,4 +342,69 @@ fn find_flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|&x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn direct_curl_injects_s() {
+        let mut args = s(&["http://localhost:8080/users"]);
+        inject_curl_silent("curl", &mut args);
+        assert_eq!(args, s(&["-s", "http://localhost:8080/users"]));
+    }
+
+    #[test]
+    fn direct_curl_already_silent_no_change() {
+        let mut args = s(&["-s", "http://localhost:8080/users"]);
+        inject_curl_silent("curl", &mut args);
+        assert_eq!(args, s(&["-s", "http://localhost:8080/users"]));
+    }
+
+    #[test]
+    fn direct_curl_long_silent_no_change() {
+        let mut args = s(&["--silent", "http://localhost:8080/users"]);
+        inject_curl_silent("curl", &mut args);
+        assert_eq!(args, s(&["--silent", "http://localhost:8080/users"]));
+    }
+
+    #[test]
+    fn direct_curl_combined_flag_with_s_no_change() {
+        let mut args = s(&["-fsSL", "http://localhost:8080/users"]);
+        inject_curl_silent("curl", &mut args);
+        assert_eq!(args, s(&["-fsSL", "http://localhost:8080/users"]));
+    }
+
+    #[test]
+    fn shell_c_injects_s_into_curl() {
+        let mut args = s(&["-c", "curl http://localhost:8080/users | jq -c ."]);
+        inject_curl_silent("sh", &mut args);
+        assert_eq!(args[1], "curl -s http://localhost:8080/users | jq -c .");
+    }
+
+    #[test]
+    fn shell_c_curl_already_silent_no_change() {
+        let mut args = s(&["-c", "curl -s http://localhost:8080/users | jq -c ."]);
+        inject_curl_silent("bash", &mut args);
+        assert_eq!(args[1], "curl -s http://localhost:8080/users | jq -c .");
+    }
+
+    #[test]
+    fn shell_c_multiple_curls_both_injected() {
+        let mut args = s(&["-c", "curl http://a/b && curl http://c/d"]);
+        inject_curl_silent("sh", &mut args);
+        assert_eq!(args[1], "curl -s http://a/b && curl -s http://c/d");
+    }
+
+    #[test]
+    fn non_curl_binary_no_change() {
+        let mut args = s(&["--query", "SELECT 1"]);
+        inject_curl_silent("psql", &mut args);
+        assert_eq!(args, s(&["--query", "SELECT 1"]));
+    }
 }
