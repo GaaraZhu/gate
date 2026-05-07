@@ -19,13 +19,11 @@ AI coding agents that access internal data sources can inadvertently exfiltrate 
 
 ## Demo
 
-**Claude Code** — the agent asked for all users in plain English; `gate` intercepted the query and returned all columns with `full_name` and `email` masked before they reached the model context.
+The agent asked for all users in plain English; `gate` intercepted the query and returned all columns with `full_name` and `email` masked before they reached the model context.
 
 ![gate blocking PII in a Claude Code session using tkpsql](assets/demo-claude-code.jpg)
 
-**OpenCode** — same query, same two-gate redaction pipeline, different harness. The `full_name` and `email` columns are replaced with `[PII:name]` and `[PII:email]` before the model sees the result.
-
-![gate blocking PII in an opencode session using tkpsql](assets/demo-opencode.jpg)
+Also works with OpenCode — see the [full list of supported harnesses](#how-it-works).
 
 ## Quickstart
 
