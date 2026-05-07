@@ -37,6 +37,10 @@ pub struct ToolConfig {
     /// output is not JSON by default (e.g. `pipe: "jq -c ."`).
     #[serde(default)]
     pub pipe: Option<String>,
+    /// Extra arguments appended to the tool invocation before spawning. Useful for
+    /// injecting output-format flags automatically (e.g. `["--csv"]` for psql).
+    #[serde(default)]
+    pub extra_args: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

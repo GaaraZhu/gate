@@ -468,6 +468,64 @@ fn hash_mode_deterministic_across_invocations() {
     assert_eq!(v1["email"], v2["email"], "hash must be stable across runs");
 }
 
+/// extra_args: run.rs must append configured extra_args to the spawned command.
+/// The fake tool echoes $* so we can assert "--csv" was injected.
+#[test]
+fn extra_args_appended_to_spawn_command() {
+    let dir = tmp();
+    let tool = write_script(&dir, "fake-psql", r#"echo "{\"got\":\"$*\"}""#);
+    let config = write_config(
+        &dir,
+        "tools:\n  fake-psql:\n    sql_arg: \"-c\"\n    extra_args: [\"--csv\"]\n",
+    );
+
+    let out = redact_run(&config, &tool, &["-c", "SELECT id FROM users"]);
+
+    assert_eq!(
+        exit_code(&out),
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert!(
+        v["got"].as_str().unwrap_or("").contains("--csv"),
+        "expected --csv in args, got: {}",
+        v["got"]
+    );
+}
+
+/// pipe: run.rs must run the tool, pipe its stdout to the configured pipe command,
+/// and feed the combined output through Gate 2.
+#[test]
+fn pipe_output_fed_through_gate2() {
+    let dir = tmp();
+    // Tool outputs non-JSON (simulates psql table format)
+    let tool = write_script(&dir, "fake-psql", "echo 'some table output'");
+    // Pipe script drains stdin and emits known JSON with PII
+    let pipe_script = write_script(
+        &dir,
+        "table-to-json",
+        r#"cat > /dev/null; printf '[{"id":1,"email":"dave@example.com"}]'"#,
+    );
+    let config = write_config(
+        &dir,
+        &format!("tools:\n  fake-psql:\n    sql_arg: \"-c\"\n    pipe: \"{pipe_script}\"\n"),
+    );
+
+    let out = redact_run(&config, &tool, &["-c", "SELECT id, email FROM users"]);
+
+    assert_eq!(
+        exit_code(&out),
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["rows"][0]["email"], "[PII:email]");
+    assert_eq!(v["rows"][0]["id"], 1);
+}
+
 /// `--sql=VALUE` form (equals sign) must be parsed correctly by find_flag_value.
 #[test]
 fn sql_flag_equals_form_parsed() {

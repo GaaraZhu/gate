@@ -12,6 +12,10 @@ tools:
     sql_arg: "--sql"
   tkmsql:
     sql_arg: "--sql"
+  psql:
+    sql_arg: "-c"
+    extra_args: ["--csv"]
+    pipe: "python3 -c \"import sys,csv,json; r=csv.DictReader(sys.stdin); print(json.dumps(list(r)))\""
   curl:
     pipe: "jq -c ."   # wraps curl output through jq so Gate 2 always receives JSON
 
