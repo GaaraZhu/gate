@@ -182,6 +182,11 @@ fn redact_stdin(verbose: bool, config: &Config) {
     let payload: serde_json::Value = match serde_json::from_str(input.trim()) {
         Ok(v) => v,
         Err(_) => {
+            if verbose {
+                eprintln!(
+                    "[gate] input is not JSON — redaction skipped, passing through unchanged"
+                );
+            }
             print!("{input}");
             return;
         }

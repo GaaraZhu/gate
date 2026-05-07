@@ -150,7 +150,7 @@ AI asks to run: tkpsql query --sql "SELECT * FROM users"
 | **Financial** | `bank_account`, `account_number`, `iban`, `swift`, `routing_number`, `bsb`, `credit_card` / `card_number`, `cvv` / `cvc`, `expiry` |
 | **Employment** | `salary`, `wage`, `job_title`, `employee_id`, `staff_id`, `student_id`, `manager_id`, and any `<entity>_id` / `<entity>_number` where entity is: employee, staff, student, member, client, customer, consumer, cust, crm, person, manager, user, device, session, cookie, advertising, external |
 | **Health & medical** | `medical`, `health`, `diagnosis`, `prescription`, `disability`, `vaccination`, `vaccine`, `npi` |
-| **Online & technical** | `username` / `user_name`, `login`, `ip_address`, `mac_address`, `auth_token`, `user_id`, `device_id`, `session_id`, `cookie_id`, `advertising_id` |
+| **Online & technical** | `username` / `user_name`, `ip_address`, `mac_address`, `auth_token`, `user_id`, `device_id`, `session_id`, `cookie_id`, `advertising_id` |
 | **Biometric** | `biometric`, `fingerprint`, `voiceprint`, `retina`, `face_scan` |
 | **Family & relationships** | `next_of_kin`, `emergency_contact`, `spouse_name`, `parent_name`, `guardian_name`, `children_names` |
 
@@ -332,6 +332,9 @@ Run `gate config` to create `~/.config/gate/config.yaml`. If you store the confi
 
 **Certain fields are not being masked (false negatives).**
 Run `gate run --verbose -- <your-command>` to see exactly why each field was passed or redacted. For each string field, verbose mode prints which step triggered (forced column, column-name classifier, Luhn, regex) or `passed (no match)` if nothing fired. You can also pipe a sample payload directly: `echo '<json>' | gate run --verbose`. Common fixes: add the column name to `column_names:` in config, or lower `confidence_threshold` if a pattern is matching below the threshold.
+
+**`gate run --verbose` shows "input is not JSON — redaction skipped".**
+The tool's output is not valid JSON, so Gate 2 cannot inspect it and passes the raw bytes through unchanged. This is expected for tools that return plain text or binary output. If you expect JSON, check the tool's output format — some CLIs require a `--json` or `--output json` flag to produce structured output.
 
 **Non-PII values are being redacted (false positives).**
 Raise `confidence_threshold` (e.g. to `0.9`) to reduce over-redaction, or narrow the regex for the offending pattern in the `patterns` block. Run `gate validate` after editing to catch syntax errors.
