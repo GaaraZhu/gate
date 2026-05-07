@@ -136,13 +136,15 @@ Any command that returns JSON can be configured as a `gate` target — database 
 
 The `tk*` commands are managed by [toolkit](https://github.com/scott-abernethy/toolkit), a credential-injecting CLI wrapper for database clients. `gate` works with any JSON-returning command — toolkit is not required.
 
-| Command | Type | Status |
+| Command | Type | Notes |
 |---|---|---|
-| `tkpsql` | PostgreSQL (toolkit-managed) | Supported |
-| `tkmsql` | MS SQL Server (toolkit-managed) | Supported |
-| `tkdbr` | Databricks (toolkit-managed) | Supported |
-| `curl` | Internal API / HTTP data source | Planned |
-| Raw DB clients (`psql`, `mysql`, …) | Direct database access | Planned |
+| `tkpsql` | PostgreSQL (toolkit-managed) | `sql_arg: "--sql"` |
+| `tkmsql` | MS SQL Server (toolkit-managed) | `sql_arg: "--sql"` |
+| `tkdbr` | Databricks (toolkit-managed) | `sql_arg: "--sql"` |
+| `psql` | PostgreSQL (direct) | `sql_arg: "-c"` |
+| `mysql` | MySQL (direct) | `sql_arg: "-e"` |
+| `curl` | HTTP data sources | `pipe: "jq -c ."` — wraps output through jq so Gate 2 receives JSON |
+| Any JSON-returning command | — | Add it to `tools:` in config |
 
 ## Configuration
 
@@ -159,6 +161,12 @@ tools:
     sql_arg: "--sql"
   tkdbr:
     sql_arg: "--sql"
+  psql:
+    sql_arg: "-c"
+  mysql:
+    sql_arg: "-e"
+  curl:
+    pipe: "jq -c ."   # wraps curl output through jq so Gate 2 always receives JSON
 
 pii:
   # Column names that indicate PII regardless of value content (case-insensitive, substring match).
@@ -235,7 +243,8 @@ pii:
 | `gate list` | Show configured tools and their SQL flags |
 | `gate validate` | Check config for errors and warnings |
 | `gate version` | Print version |
-| `gate run -- <cmd>` | *(internal)* Run a command through the gate pipeline — invoked by the hook, not directly |
+| `gate run [--verbose] -- <cmd>` | Run a command through the redaction pipeline. Normally invoked by the hook; run manually to test a command. `--verbose` prints each field's Gate 2 decision to stderr. |
+| `gate run [--verbose]` | Read JSON from stdin and apply Gate 2 redaction directly — useful for testing or piping output from arbitrary sources. |
 | `gate hook` | *(internal)* Hook entry point — invoked by the harness, not directly |
 
 To disable redaction for a single shell session without editing the config file, set the `GATE_DISABLED` environment variable:
@@ -306,6 +315,9 @@ The plugin is loaded at session start — restart your opencode session after ru
 
 **Config file not found.**
 Run `gate config` to create `~/.config/gate/config.yaml`. If you store the config elsewhere, set `GATE_CONFIG=/path/to/config.yaml` in your environment.
+
+**Certain fields are not being masked (false negatives).**
+Run `gate run --verbose -- <your-command>` to see exactly why each field was passed or redacted. For each string field, verbose mode prints which step triggered (forced column, column-name classifier, Luhn, regex) or `passed (no match)` if nothing fired. You can also pipe a sample payload directly: `echo '<json>' | gate run --verbose`. Common fixes: add the column name to `column_names:` in config, or lower `confidence_threshold` if a pattern is matching below the threshold.
 
 **Non-PII values are being redacted (false positives).**
 Raise `confidence_threshold` (e.g. to `0.9`) to reduce over-redaction, or narrow the regex for the offending pattern in the `patterns` block. Run `gate validate` after editing to catch syntax errors.
