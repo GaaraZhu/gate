@@ -181,6 +181,7 @@ mod tests {
                         sql_arg: sql_arg.map(String::from),
                         json_tool: json_tool.map(String::from),
                         pipe: None,
+                        extra_args: vec![],
                     },
                 )
             })
@@ -619,6 +620,7 @@ mod tests {
                 sql_arg: None,
                 json_tool: None,
                 pipe: Some(pipe.to_string()),
+                extra_args: vec![],
             },
         );
         Config {

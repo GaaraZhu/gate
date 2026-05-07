@@ -95,19 +95,46 @@ pub fn run(args: Vec<String>, verbose: bool) {
     }
 
     // Resolve json_tool: if the tool has a wrapper, rewrite its token + sql_arg flag.
-    let (spawn_binary, spawn_args) = resolve_spawn_command(cmd_args, tool_idx, &basename, &config);
+    let (spawn_binary, mut spawn_args) =
+        resolve_spawn_command(cmd_args, tool_idx, &basename, &config);
+
+    let tool_cfg = config.tools.get(&basename);
+
+    if let Some(extra) = tool_cfg.map(|t| t.extra_args.as_slice()) {
+        spawn_args.extend_from_slice(extra);
+    }
+
+    let pipe_cmd = tool_cfg.and_then(|t| t.pipe.as_deref());
 
     // Spawn subprocess; stderr passes through unchanged
-    let output = match std::process::Command::new(&spawn_binary)
-        .args(&spawn_args)
-        .envs(env_pairs)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => exit_with_error(&format!("{basename}: {e}")),
+    let output = if let Some(pipe) = pipe_cmd {
+        let cmd_str = shell_words::join(
+            std::iter::once(spawn_binary.as_str()).chain(spawn_args.iter().map(String::as_str)),
+        );
+        let full_cmd = format!("{cmd_str} | {pipe}");
+        match std::process::Command::new("sh")
+            .args(["-c", &full_cmd])
+            .envs(env_pairs)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => exit_with_error(&format!("{basename}: {e}")),
+        }
+    } else {
+        match std::process::Command::new(&spawn_binary)
+            .args(&spawn_args)
+            .envs(env_pairs)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => exit_with_error(&format!("{basename}: {e}")),
+        }
     };
 
     // Non-zero exit: forward stdout unchanged and propagate exit code

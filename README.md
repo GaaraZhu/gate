@@ -141,7 +141,7 @@ The `tk*` commands are managed by [toolkit](https://github.com/scott-abernethy/t
 | `tkpsql` | PostgreSQL (toolkit-managed) | `sql_arg: "--sql"` |
 | `tkmsql` | MS SQL Server (toolkit-managed) | `sql_arg: "--sql"` |
 | `tkdbr` | Databricks (toolkit-managed) | `sql_arg: "--sql"` |
-| `psql` | PostgreSQL (direct) | `sql_arg: "-c"` |
+| `psql` | PostgreSQL (direct) | `sql_arg: "-c"`, `extra_args: ["--csv"]`, `pipe: "python3 ..."` — gate injects `--csv` automatically and converts output to JSON |
 | `mysql` | MySQL (direct) | `sql_arg: "-e"` |
 | `curl` | HTTP data sources | `pipe: "jq -c ."` — wraps output through jq so Gate 2 receives JSON |
 | Any JSON-returning command | — | Add it to `tools:` in config |
@@ -163,6 +163,8 @@ tools:
     sql_arg: "--sql"
   psql:
     sql_arg: "-c"
+    extra_args: ["--csv"]   # injected automatically; switches psql to CSV output for the pipe
+    pipe: "python3 -c \"import sys,csv,json; r=csv.DictReader(sys.stdin); print(json.dumps(list(r)))\""
   mysql:
     sql_arg: "-e"
   curl:
