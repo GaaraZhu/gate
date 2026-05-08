@@ -5,6 +5,23 @@ use common::config::Config;
 use common::error::exit_with_error;
 use common::patterns::classify_column;
 
+/// Tier 1 categories in the order they appear in the README.
+const TIER1_CATEGORIES_ORDERED: &[&str] = &[
+    "Names",
+    "Demographics",
+    "Government IDs",
+    "Contact",
+    "Date of birth",
+    "Location of birth",
+    "Address & location",
+    "Financial",
+    "Employment",
+    "Health & medical",
+    "Online & technical",
+    "Biometric",
+    "Family & relationships",
+];
+
 /// Run the scan subcommand: read columnar JSON from stdin and report PII-exposed column names.
 ///
 /// Supports two input shapes:
@@ -47,7 +64,7 @@ pub fn run() {
     print_report(&pairs, &stats);
 
     // Exit code: 0 if no PII found, 1 if any PII columns detected
-    let has_pii = stats.iter().any(|(category, _)| category != "No PII");
+    let has_pii = stats.iter().any(|result| result.tier1 != "No PII");
     std::process::exit(if has_pii { 1 } else { 0 });
 }
 
@@ -193,29 +210,78 @@ fn parse_array_of_objects(rows: &[serde_json::Value]) -> Result<Vec<(String, Str
     Ok(pairs)
 }
 
-/// Aggregation result per PII category.
-struct CategoryResult {
+/// Maps tier-2 PII categories to tier-1 categories for hierarchical reporting.
+/// Based on README categories: Names, Demographics, Government IDs, Contact, etc.
+fn map_to_tier1_category(tier2: &str) -> &'static str {
+    match tier2 {
+        // Names
+        "name" => "Names",
+        "salutation" => "Names",
+        // Demographics
+        "gender" | "nationality" => "Demographics",
+        // Government IDs
+        "national_id" | "tax_id" | "visa" | "resident_id" | "immigration_id" | "passport"
+        | "license" | "ssn" => "Government IDs",
+        // Contact
+        "email" | "phone" => "Contact",
+        // Date of birth
+        "dob" => "Date of birth",
+        // Location of birth
+        "lob" => "Location of birth",
+        // Address & location
+        "address" | "gps" => "Address & location",
+        // Financial
+        "credit_card" | "cvv" | "iban" | "swift" | "bank_account" | "expiry" => "Financial",
+        // Employment
+        "salary" | "job_title" | "employee_id" => "Employment",
+        // Health & medical
+        "medical" | "health" | "npi" => "Health & medical",
+        // Online & technical
+        "username" | "auth_token" | "mac_address" | "ip" => "Online & technical",
+        // Biometric
+        "biometric" | "fingerprint" => "Biometric",
+        // Family & relationships
+        "next_of_kin" | "emergency_contact" => "Family & relationships",
+        // Default
+        _ => "Other",
+    }
+}
+
+/// Aggregation result per PII category with tier-1 and tier-2 structure.
+struct TieredCategoryResult {
+    tier1: &'static str,
+    tier2: String,
     count: usize,
     examples: Vec<String>,
 }
 
-/// Classify each column using Gate 1 patterns and aggregate by PII type.
+/// Classify each column using Gate 1 patterns and aggregate by tier-1 then tier-2 PII type.
 fn aggregate_by_category(
     pairs: &[(String, String)],
     _config: &common::config::Config,
-) -> BTreeMap<String, CategoryResult> {
-    let mut results: BTreeMap<String, CategoryResult> = BTreeMap::new();
+) -> Vec<TieredCategoryResult> {
+    let mut map: BTreeMap<(String, String), TieredCategoryResult> = BTreeMap::new();
 
     for (table, col) in pairs {
-        let category = match classify_column(col) {
+        let tier2 = match classify_column(col) {
             Some(pii_type) => pii_type.to_string(),
             None => "No PII".to_string(),
         };
 
-        let entry = results.entry(category).or_insert(CategoryResult {
+        let tier1 = if tier2 == "No PII" {
+            "No PII"
+        } else {
+            map_to_tier1_category(&tier2)
+        };
+
+        let key = (tier1.to_string(), tier2.clone());
+        let entry = map.entry(key).or_insert(TieredCategoryResult {
+            tier1,
+            tier2: tier2.clone(),
             count: 0,
             examples: Vec::new(),
         });
+
         entry.count += 1;
 
         // Store up to 3 examples
@@ -224,23 +290,31 @@ fn aggregate_by_category(
         }
     }
 
+    // Convert to vec sorted by tier1 then count descending
+    let mut results: Vec<_> = map.into_values().collect();
+    results.sort_by(|a, b| {
+        // Sort "No PII" to the bottom
+        match (a.tier1 == "No PII", b.tier1 == "No PII") {
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            _ => {
+                // Within same tier1, sort by count descending
+                a.tier1.cmp(b.tier1).then_with(|| b.count.cmp(&a.count))
+            }
+        }
+    });
+
     results
 }
 
 /// Print the scan report to stdout.
-fn print_report(pairs: &[(String, String)], stats: &BTreeMap<String, CategoryResult>) {
+fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult]) {
     let total_columns = pairs.len();
     let unique_tables = pairs
         .iter()
         .map(|(t, _)| t)
         .collect::<std::collections::HashSet<_>>()
         .len();
-
-    // Separate PII categories from "No PII", sort by count descending
-    let mut sorted: Vec<_> = stats.iter().collect();
-    sorted.sort_by_key(|(_, result)| std::cmp::Reverse(result.count));
-    let (pii_cats, no_pii_cats): (Vec<_>, Vec<_>) =
-        sorted.iter().partition(|(cat, _)| cat.as_str() != "No PII");
 
     println!("Gate PII Scan");
     println!(
@@ -249,40 +323,74 @@ fn print_report(pairs: &[(String, String)], stats: &BTreeMap<String, CategoryRes
     );
 
     println!(
-        "{:<18} {:<10} {:<12} Examples",
-        "Category", "Columns", "% of total"
+        "{:<24} {:<18} {:<10} {:<12} Examples",
+        "Tier 1 Category", "Tier 2 Category", "Columns", "% of total"
     );
-    println!("{}", "─".repeat(75));
+    println!("{}", "─".repeat(90));
 
-    let total_pii: usize = pii_cats.iter().map(|(_, result)| result.count).sum();
-    for (category, result) in &pii_cats {
-        let percentage = (result.count as f64 / total_columns as f64) * 100.0;
-        let examples_str = if result.examples.len() >= 3 {
-            format!("{}, {} …", result.examples[0], result.examples[1])
-        } else {
-            result.examples.join(", ")
-        };
-        println!(
-            "{:<18} {:<10} {:<12.1}% {}",
-            category, result.count, percentage, examples_str
-        );
+    let mut total_pii: usize = 0;
+
+    // Separate PII from "No PII"
+    let (pii_results, no_pii_results): (Vec<_>, Vec<_>) =
+        stats.iter().partition(|r| r.tier1 != "No PII");
+
+    // Group PII results by tier1 category
+    let mut tier1_groups: BTreeMap<&'static str, Vec<&TieredCategoryResult>> = BTreeMap::new();
+    for result in &pii_results {
+        tier1_groups.entry(result.tier1).or_default().push(result);
     }
 
-    println!("{}", "─".repeat(75));
+    // Print all tier1 categories in README order
+    for tier1_cat in TIER1_CATEGORIES_ORDERED {
+        match tier1_groups.get(tier1_cat) {
+            Some(group) => {
+                // Print tier2 entries for this tier1 category
+                for (idx, result) in group.iter().enumerate() {
+                    let percentage = (result.count as f64 / total_columns as f64) * 100.0;
+                    let examples_str = if result.examples.len() >= 3 {
+                        format!("{}, {} …", result.examples[0], result.examples[1])
+                    } else {
+                        result.examples.join(", ")
+                    };
+
+                    // Print tier1 only on first row of the group
+                    let tier1_display = if idx == 0 { *tier1_cat } else { "" };
+
+                    println!(
+                        "{:<24} {:<18} {:<10} {:>6.1}% {}",
+                        tier1_display, result.tier2, result.count, percentage, examples_str
+                    );
+                    total_pii += result.count;
+                }
+            }
+            None => {
+                // Print N/A if no tier2 entries for this tier1 category
+                println!("{:<24} {:<18} {:<10} {:>6.1}%", tier1_cat, "N/A", 0, 0.0);
+            }
+        }
+    }
+
+    // Empty line before total PII
+    println!();
 
     let pii_percentage = (total_pii as f64 / total_columns as f64) * 100.0;
+    // Highlight Total PII number and percentage with bold + red formatting (using ANSI escape codes)
+    // \x1b[1;31m = bold + red text, \x1b[0m = reset
     println!(
-        "{:<18} {:<10} {:<12.1}%",
-        "Total PII", total_pii, pii_percentage
+        "{:<24} {:<18} \x1b[1;31m{:<10} {:>6.1}%\x1b[0m",
+        "TOTAL PII", "", total_pii, pii_percentage
     );
 
-    for (category, result) in &no_pii_cats {
+    // Print "No PII" categories
+    for result in &no_pii_results {
         let percentage = (result.count as f64 / total_columns as f64) * 100.0;
         println!(
-            "{:<18} {:<10} {:<12.1}%",
-            category, result.count, percentage
+            "{:<24} {:<18} {:<10} {:>6.1}%",
+            result.tier1, result.tier2, result.count, percentage
         );
     }
+
+    println!();
 }
 
 #[cfg(test)]
@@ -440,8 +548,9 @@ mod tests {
             ("users".to_string(), "order_date".to_string()),
         ];
         let stats = aggregate_by_category(&pairs, &cfg);
-        assert!(stats.contains_key("email") || stats.iter().any(|(_, v)| v.count > 0));
-        assert!(stats.contains_key("No PII") || stats.iter().any(|(k, _)| k == "No PII"));
+        // Should have at least one PII and one No PII entry
+        assert!(stats.iter().any(|r| r.tier1 != "No PII"));
+        assert!(stats.iter().any(|r| r.tier1 == "No PII"));
     }
 
     #[test]
@@ -451,11 +560,10 @@ mod tests {
             .map(|i| (format!("t{i}"), "first_name".to_string()))
             .collect::<Vec<_>>();
         let stats = aggregate_by_category(&pairs, &cfg);
-        // find whichever category "first_name" landed in
-        let name_entry = stats
-            .values()
-            .find(|r| r.examples.len() > 0 && r.examples[0].contains("first_name"));
+        // Find the "name" entry (first_name maps to "name" category)
+        let name_entry = stats.iter().find(|r| r.tier2 == "name");
         if let Some(entry) = name_entry {
+            assert_eq!(entry.count, 5);
             assert!(entry.examples.len() <= 3);
         }
     }
@@ -468,6 +576,32 @@ mod tests {
             ("t".to_string(), "legacy_business".to_string()),
         ];
         let stats = aggregate_by_category(&pairs, &cfg);
-        assert!(stats.get("No PII").map(|r| r.count).unwrap_or(0) > 0);
+        let no_pii = stats.iter().find(|r| r.tier1 == "No PII");
+        assert!(no_pii.map(|r| r.count).unwrap_or(0) > 0);
+    }
+
+    // ── Category mapping tests ───────────────────────────────────────────
+
+    #[test]
+    fn map_email_to_contact() {
+        assert_eq!(map_to_tier1_category("email"), "Contact");
+        assert_eq!(map_to_tier1_category("phone"), "Contact");
+    }
+
+    #[test]
+    fn map_tax_id_to_government_ids() {
+        assert_eq!(map_to_tier1_category("tax_id"), "Government IDs");
+        assert_eq!(map_to_tier1_category("national_id"), "Government IDs");
+        assert_eq!(map_to_tier1_category("visa"), "Government IDs");
+    }
+
+    #[test]
+    fn map_name_to_names() {
+        assert_eq!(map_to_tier1_category("name"), "Names");
+    }
+
+    #[test]
+    fn map_unknown_to_other() {
+        assert_eq!(map_to_tier1_category("unknown_type"), "Other");
     }
 }
