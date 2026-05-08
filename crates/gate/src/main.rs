@@ -60,14 +60,10 @@ enum Commands {
     },
     /// List configured tools and their sql_arg values
     List,
-    /// Scan a configured tool's database schema for PII column names
-    Scan {
-        /// Name of the configured tool to introspect (e.g. tkpsql, tkdbr)
-        tool: String,
-        /// Schema to scan (defaults vary by tool: public / dbo / default)
-        #[arg(long)]
-        schema: Option<String>,
-    },
+    /// Read columnar JSON from stdin and report PII-exposed column names.
+    /// Pipe the output of a schema query (SELECT TABLE_NAME, COLUMN_NAME ...) into this command.
+    /// Example: tkdbr query --sql "SELECT TABLE_NAME, COLUMN_NAME FROM ..." | gate scan
+    Scan,
     /// Load config, compile patterns, and report errors or warnings
     Validate,
     /// Enable PII redaction (sets enabled: true in config)
@@ -92,7 +88,7 @@ fn main() {
             init_only,
         } => config_cmd::run(path, print, init_only),
         Commands::List => list::run(),
-        Commands::Scan { tool, schema } => scan::run(&tool, schema.as_deref()),
+        Commands::Scan => scan::run(),
         Commands::Validate => validate::run(),
         Commands::Enable => enable_disable::run(true),
         Commands::Disable => enable_disable::run(false),
