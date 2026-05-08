@@ -7,11 +7,14 @@ use common::patterns::classify_column;
 
 /// Run the scan subcommand: read columnar JSON from stdin and report PII-exposed column names.
 ///
-/// Expected input shape (tkdbr / tkpsql / tkmsql standard output):
-///   {"columns": ["TABLE_NAME", "COLUMN_NAME", ...], "rows": [["tbl", "col_name"], ...], ...}
+/// Supports two input shapes:
+/// 1. Array-of-arrays (tkdbr / tkmsql):
+///    {"columns": ["TABLE_NAME", "COLUMN_NAME", ...], "rows": [["tbl", "col_name"], ...], ...}
+/// 2. Array-of-objects (psql):
+///    {"rows": [{"column_name": "col", "table_name": "tbl"}, ...], "count": N}
 ///
-/// The subcommand locates the "COLUMN_NAME" header (case-insensitive) in the `columns` array,
-/// extracts that field from every row, and runs Gate 1 column classification on each value.
+/// The subcommand extracts (table_name, column_name) pairs and runs Gate 1 column
+/// classification on each column name.
 pub fn run() {
     let config = match Config::load() {
         Ok(c) => c,
@@ -50,8 +53,12 @@ pub fn run() {
 
 /// Parse columnar JSON output to extract (table_name, column_name) pairs.
 ///
-/// Locates TABLE_NAME and COLUMN_NAME headers (case-insensitive) in the `columns` array,
-/// then reads the corresponding positions from each row.
+/// Supports two formats:
+/// 1. Array-of-arrays (tkdbr / tkmsql): `{"columns": [...], "rows": [[...], ...]}`
+///    Locates TABLE_NAME and COLUMN_NAME headers (case-insensitive) in the `columns` array,
+///    then reads the corresponding positions from each row.
+/// 2. Array-of-objects (psql): `{"rows": [{"column_name": "...", "table_name": "..."}, ...]}`
+///    Extracts column_name and table_name directly from each object.
 fn parse_columnar_json(json_str: &str) -> Result<Vec<(String, String)>, String> {
     let value: serde_json::Value = match serde_json::from_str(json_str.trim()) {
         Ok(v) => v,
@@ -63,6 +70,36 @@ fn parse_columnar_json(json_str: &str) -> Result<Vec<(String, String)>, String> 
         }
     };
 
+    // Extract rows
+    let rows =
+        match value.get("rows") {
+            Some(serde_json::Value::Array(r)) => r,
+            _ => return Err(
+                "unexpected input shape — expected a `rows` array (e.g. from tkdbr or psql query)."
+                    .to_string(),
+            ),
+        };
+
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Detect format: check if first row is an array (tkdbr format) or object (psql format)
+    match &rows[0] {
+        serde_json::Value::Array(_) => parse_array_of_arrays(&value, rows),
+        serde_json::Value::Object(_) => parse_array_of_objects(rows),
+        _ => Err(
+            "unexpected row format — expected array of arrays (tkdbr) or array of objects (psql)."
+                .to_string(),
+        ),
+    }
+}
+
+/// Parse array-of-arrays format: `{"columns": [...], "rows": [[...], ...]}`
+fn parse_array_of_arrays(
+    value: &serde_json::Value,
+    rows: &[serde_json::Value],
+) -> Result<Vec<(String, String)>, String> {
     // Extract columns array
     let columns = match value.get("columns") {
         Some(serde_json::Value::Array(cols)) => cols,
@@ -98,17 +135,6 @@ fn parse_columnar_json(json_str: &str) -> Result<Vec<(String, String)>, String> 
             .to_string()
     })?;
 
-    // Extract rows
-    let rows = match value.get("rows") {
-        Some(serde_json::Value::Array(r)) => r,
-        _ => {
-            return Err(
-                "unexpected input shape — expected a `rows` array (e.g. from tkdbr query)."
-                    .to_string(),
-            )
-        }
-    };
-
     // Collect (table, column) pairs
     let mut pairs = Vec::new();
     for row in rows {
@@ -119,6 +145,49 @@ fn parse_columnar_json(json_str: &str) -> Result<Vec<(String, String)>, String> 
                 }
             }
         }
+    }
+
+    Ok(pairs)
+}
+
+/// Parse array-of-objects format: `{"rows": [{"column_name": "...", "table_name": "..."}, ...]}`
+fn parse_array_of_objects(rows: &[serde_json::Value]) -> Result<Vec<(String, String)>, String> {
+    let mut pairs = Vec::new();
+
+    for row in rows {
+        if let serde_json::Value::Object(map) = row {
+            // Extract column_name and table_name (case-insensitive key lookup)
+            let mut column_name: Option<String> = None;
+            let mut table_name: Option<String> = None;
+
+            for (key, val) in map.iter() {
+                match key.to_lowercase().as_str() {
+                    "column_name" => {
+                        if let Some(s) = val.as_str() {
+                            column_name = Some(s.to_string());
+                        }
+                    }
+                    "table_name" => {
+                        if let Some(s) = val.as_str() {
+                            table_name = Some(s.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if let (Some(table), Some(col)) = (table_name, column_name) {
+                pairs.push((table, col));
+            }
+        }
+    }
+
+    if pairs.is_empty() && !rows.is_empty() {
+        return Err(
+            "no valid (table_name, column_name) pairs found in objects — \
+             each object must contain both fields."
+                .to_string(),
+        );
     }
 
     Ok(pairs)
@@ -294,6 +363,70 @@ mod tests {
         assert_eq!(pairs.len(), 5);
         assert_eq!(pairs[0].1, "account_id");
         assert_eq!(pairs[2].1, "id");
+    }
+
+    // ── psql format tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_psql_object_format() {
+        // psql object format with lowercase field names
+        let json = r#"{"rows":[{"column_name":"id","table_name":"users"},{"column_name":"email","table_name":"users"}],"count":2}"#;
+        let pairs = parse_columnar_json(json).unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], ("users".to_string(), "id".to_string()));
+        assert_eq!(pairs[1], ("users".to_string(), "email".to_string()));
+    }
+
+    #[test]
+    fn parse_psql_object_mixed_case_fields() {
+        // psql with mixed-case field names
+        let json = r#"{"rows":[{"Column_Name":"first_name","Table_Name":"users"}],"count":1}"#;
+        let pairs = parse_columnar_json(json).unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0], ("users".to_string(), "first_name".to_string()));
+    }
+
+    #[test]
+    fn parse_psql_object_with_extra_fields() {
+        // psql with additional fields that should be ignored
+        let json = r#"{"rows":[{"table_name":"orders","column_name":"customer_id","data_type":"integer","is_nullable":false}],"count":1}"#;
+        let pairs = parse_columnar_json(json).unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0], ("orders".to_string(), "customer_id".to_string()));
+    }
+
+    #[test]
+    fn parse_psql_object_multiple_tables() {
+        // psql with multiple tables and columns
+        let json = r#"{"rows":[{"column_name":"id","table_name":"users"},{"column_name":"full_name","table_name":"users"},{"column_name":"email","table_name":"users"},{"column_name":"status","table_name":"users"},{"column_name":"created_at","table_name":"users"},{"column_name":"last_login_at","table_name":"users"}],"count":6}"#;
+        let pairs = parse_columnar_json(json).unwrap();
+        assert_eq!(pairs.len(), 6);
+        assert_eq!(pairs[0], ("users".to_string(), "id".to_string()));
+        assert_eq!(pairs[1], ("users".to_string(), "full_name".to_string()));
+        assert_eq!(pairs[2], ("users".to_string(), "email".to_string()));
+    }
+
+    #[test]
+    fn parse_psql_object_missing_column_name_field_errors() {
+        let json = r#"{"rows":[{"table_name":"users"}],"count":1}"#;
+        let result = parse_columnar_json(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no valid"));
+    }
+
+    #[test]
+    fn parse_psql_object_missing_table_name_field_errors() {
+        let json = r#"{"rows":[{"column_name":"email"}],"count":1}"#;
+        let result = parse_columnar_json(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no valid"));
+    }
+
+    #[test]
+    fn parse_psql_object_empty_rows() {
+        let json = r#"{"rows":[],"count":0}"#;
+        let pairs = parse_columnar_json(json).unwrap();
+        assert!(pairs.is_empty());
     }
 
     // ── aggregate_by_category ─────────────────────────────────────────────
