@@ -92,7 +92,7 @@ Hint
   Use --verbose to show all detected columns
 ```
 
-Risk levels: **CRITICAL** (>25% of columns are PII), **HIGH** (>10%), **LOW** (≤10%). The command exits with code 1 if any PII columns are found, making it scriptable in CI audits.
+Risk levels: **CRITICAL** (>25% of columns are PII), **HIGH** (>10%), **LOW** (≤10%). The command exits with code 1 if any PII columns are found, making it scriptable in CI audits. Pass `--verbose` to show the full list of detected columns in each category instead of a truncated preview.
 
 If you have not yet created a config, run `gate config --init-only` first to generate a starter config. No tools need to be configured to use `gate scan` — it only uses built-in column-name detection.
 
@@ -324,13 +324,12 @@ pii:
 | `gate uninstall` | Remove the hook, config directory, and gate-generated opencode plugins (with confirmation) |
 | `gate enable` | Enable PII redaction (sets `enabled: true` in config) |
 | `gate disable` | Disable PII redaction (sets `enabled: false` in config) |
-| `gate config` | Create and edit the config file |
+| `gate config [--init-only]` | Create and edit the config file. `--init-only` creates `~/.config/gate/config.yaml` without opening the editor — useful in scripts. |
 | `gate list` | Show configured tools and their SQL flags |
 | `gate validate` | Check config for errors and warnings |
 | `gate version` | Print version |
-| `gate scan` | Pipe schema query output (`SELECT TABLE_NAME, COLUMN_NAME ...`) into this to get a PII risk report across all tables. Exits 1 if any PII columns are found — scriptable in CI audits. |
-| `gate run [--verbose] -- <cmd>` | Run a command through the redaction pipeline. Normally invoked by the hook; run manually to test a command. `--verbose` prints each field's Gate 2 decision to stderr. |
-| `gate run [--verbose]` | Read JSON from stdin and apply Gate 2 redaction directly — useful for testing or piping output from arbitrary sources. |
+| `gate scan [--verbose]` | Pipe schema query output (`SELECT TABLE_NAME, COLUMN_NAME ...`) into this to get a PII risk report across all tables. `--verbose` shows all detected columns without truncation. Exits 1 if any PII columns are found — scriptable in CI audits. |
+| `gate run [--verbose] [-- <cmd>]` | Run a command through the redaction pipeline, or pipe JSON from stdin for direct Gate 2 inspection. Normally invoked by the hook; run manually to test. `--verbose` prints each field's Gate 2 decision to stderr. |
 | `gate hook` | *(internal)* Hook entry point — invoked by the harness, not directly |
 
 To disable redaction for a single shell session without editing the config file, set the `GATE_DISABLED` environment variable:

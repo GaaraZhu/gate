@@ -64,7 +64,7 @@ The hook fires transparently. Claude sees:
     { "id": 1, "first_name": "[PII:name]", "email": "[PII:email]", "ssn": "[PII:ssn]", "credit_card": "[PII:credit_card]" },
     ...
   ],
-  "_redact_summary": { "redacted": 40, "types": ["credit_card", "email", "name", "ssn"], "warnings": [] }
+  "_gate_summary": { "redacted": 40, "types": ["credit_card", "email", "name", "ssn"], "warnings": [] }
 }
 ```
 
