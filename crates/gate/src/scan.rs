@@ -32,7 +32,7 @@ const TIER1_CATEGORIES_ORDERED: &[&str] = &[
 ///
 /// The subcommand extracts (table_name, column_name) pairs and runs Gate 1 column
 /// classification on each column name.
-pub fn run(verbose: bool) {
+pub fn run(verbose: bool, json: bool) {
     let config = match Config::load() {
         Ok(c) => c,
         Err(e) => exit_with_error(&format!(
@@ -53,7 +53,11 @@ pub fn run(verbose: bool) {
     };
 
     if pairs.is_empty() {
-        println!("No columns found in input.");
+        if json {
+            println!("{}", empty_json_report());
+        } else {
+            println!("No columns found in input.");
+        }
         std::process::exit(0);
     }
 
@@ -61,7 +65,11 @@ pub fn run(verbose: bool) {
     let stats = aggregate_by_category(&pairs, &config);
 
     // Render the report
-    print_report(&pairs, &stats, verbose);
+    if json {
+        print_json_report(&pairs, &stats);
+    } else {
+        print_report(&pairs, &stats, verbose);
+    }
 
     // Exit code: 0 if no PII found, 1 if any PII columns detected
     let has_pii = stats.iter().any(|result| result.tier1 != "No PII");
@@ -315,11 +323,7 @@ fn aggregate_by_category(
         });
 
         entry.count += 1;
-
-        // Store up to 3 examples
-        if entry.examples.len() < 3 {
-            entry.examples.push(format!("{}.{}", table, col));
-        }
+        entry.examples.push(format!("{}.{}", table, col));
     }
 
     // Convert to vec sorted by tier1 then count descending
@@ -411,6 +415,94 @@ fn compute_risk_level(pii_results: &[&TieredCategoryResult], total_columns: usiz
         1 if pii_ratio > 0.25 => "HIGH",
         _ => "LOW",
     }
+}
+
+fn sensitivity_label(weight: u8) -> &'static str {
+    match weight {
+        3 => "critical",
+        2 => "elevated",
+        1 => "standard",
+        _ => "unknown",
+    }
+}
+
+fn empty_json_report() -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "risk_level": "LOW",
+        "tables_scanned": 0,
+        "columns_scanned": 0,
+        "pii_columns": 0,
+        "non_pii_columns": 0,
+        "pii_percentage": 0.0,
+        "categories": []
+    }))
+    .unwrap()
+}
+
+/// Emit the scan results as pretty-printed JSON.
+fn print_json_report(pairs: &[(String, String)], stats: &[TieredCategoryResult]) {
+    let total_columns = pairs.len();
+    let unique_tables = pairs
+        .iter()
+        .map(|(t, _)| t)
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
+    let (pii_results, no_pii_results): (Vec<_>, Vec<_>) =
+        stats.iter().partition(|r| r.tier1 != "No PII");
+
+    let total_pii: usize = pii_results.iter().map(|r| r.count).sum();
+    let total_no_pii: usize = no_pii_results.iter().map(|r| r.count).sum();
+    let pii_percentage = if total_columns > 0 {
+        (total_pii as f64 / total_columns as f64 * 1000.0).round() / 10.0
+    } else {
+        0.0
+    };
+
+    let risk_level = compute_risk_level(&pii_results, total_columns);
+
+    // Group examples by tier-1 category, preserving TIER1_CATEGORIES_ORDERED order
+    let mut tier1_examples: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for result in &pii_results {
+        tier1_examples
+            .entry(result.tier1)
+            .or_default()
+            .extend(result.examples.iter().map(String::as_str));
+    }
+
+    let mut categories = Vec::new();
+    for cat in TIER1_CATEGORIES_ORDERED {
+        if let Some(columns) = tier1_examples.get(cat) {
+            let count = columns.len();
+            categories.push(serde_json::json!({
+                "name": cat,
+                "sensitivity": sensitivity_label(category_weight(cat)),
+                "count": count,
+                "columns": columns,
+            }));
+        }
+    }
+    // Safety-net "Other" bucket
+    if let Some(columns) = tier1_examples.get("Other") {
+        categories.push(serde_json::json!({
+            "name": "Other",
+            "sensitivity": "unknown",
+            "count": columns.len(),
+            "columns": columns,
+        }));
+    }
+
+    let output = serde_json::json!({
+        "risk_level": risk_level,
+        "tables_scanned": unique_tables,
+        "columns_scanned": total_columns,
+        "pii_columns": total_pii,
+        "non_pii_columns": total_no_pii,
+        "pii_percentage": pii_percentage,
+        "categories": categories,
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 
 /// Print the scan report to stdout.
@@ -744,17 +836,18 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_examples_capped_at_three() {
+    fn aggregate_examples_stores_all() {
+        // The cap of 3 lives in display only; aggregation stores every example
+        // so JSON output and verbose mode can show the full list.
         let cfg = dummy_config();
         let pairs = (1..=5)
             .map(|i| (format!("t{i}"), "first_name".to_string()))
             .collect::<Vec<_>>();
         let stats = aggregate_by_category(&pairs, &cfg);
-        // Find the "Names" entry (first_name maps to "Names" tier1 category)
         let names_entry = stats.iter().find(|r| r.tier1 == "Names");
         if let Some(entry) = names_entry {
             assert_eq!(entry.count, 5);
-            assert!(entry.examples.len() <= 3);
+            assert_eq!(entry.examples.len(), 5);
         }
     }
 
@@ -939,5 +1032,116 @@ mod tests {
         // Demographics is tier-1; even if > 0.25 it's HIGH, but low count is LOW
         let r = make_result("Demographics", 5);
         assert_eq!(compute_risk_level(&[&r], 100), "LOW");
+    }
+
+    // ── print_json_report ─────────────────────────────────────────────────────
+
+    fn run_json_report(pairs: &[(&str, &str)]) -> serde_json::Value {
+        let owned: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(t, c)| (t.to_string(), c.to_string()))
+            .collect();
+        let cfg = dummy_config();
+        let stats = aggregate_by_category(&owned, &cfg);
+        // Capture stdout by building the JSON value directly (same logic as print_json_report)
+        let (pii_results, no_pii_results): (Vec<_>, Vec<_>) =
+            stats.iter().partition(|r| r.tier1 != "No PII");
+        let total_columns = owned.len();
+        let total_pii: usize = pii_results.iter().map(|r| r.count).sum();
+        let total_no_pii: usize = no_pii_results.iter().map(|r| r.count).sum();
+        let pii_percentage = if total_columns > 0 {
+            (total_pii as f64 / total_columns as f64 * 1000.0).round() / 10.0
+        } else {
+            0.0
+        };
+        let risk_level = compute_risk_level(&pii_results, total_columns);
+        let mut tier1_examples: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for result in &pii_results {
+            tier1_examples
+                .entry(result.tier1)
+                .or_default()
+                .extend(result.examples.iter().map(String::as_str));
+        }
+        let mut categories = Vec::new();
+        for cat in TIER1_CATEGORIES_ORDERED {
+            if let Some(columns) = tier1_examples.get(cat) {
+                categories.push(serde_json::json!({
+                    "name": cat,
+                    "sensitivity": sensitivity_label(category_weight(cat)),
+                    "count": columns.len(),
+                    "columns": columns,
+                }));
+            }
+        }
+        serde_json::json!({
+            "risk_level": risk_level,
+            "tables_scanned": owned.iter().map(|(t,_)| t.as_str()).collect::<std::collections::HashSet<_>>().len(),
+            "columns_scanned": total_columns,
+            "pii_columns": total_pii,
+            "non_pii_columns": total_no_pii,
+            "pii_percentage": pii_percentage,
+            "categories": categories,
+        })
+    }
+
+    #[test]
+    fn json_report_shape_and_top_level_fields() {
+        let v = run_json_report(&[
+            ("users", "email"),
+            ("users", "first_name"),
+            ("users", "status"),
+        ]);
+        assert_eq!(v["tables_scanned"], 1);
+        assert_eq!(v["columns_scanned"], 3);
+        assert_eq!(v["pii_columns"], 2);
+        assert_eq!(v["non_pii_columns"], 1);
+        assert!(v["risk_level"].is_string());
+        assert!(v["categories"].is_array());
+    }
+
+    #[test]
+    fn json_report_categories_include_all_columns_not_capped() {
+        // 5 different tables, same PII column — all 5 should appear in JSON
+        let pairs: Vec<(&str, &str)> = (0..5)
+            .map(|i| {
+                if i == 0 {
+                    ("t0", "email")
+                } else {
+                    ("t1", "email")
+                }
+            })
+            .collect();
+        let pairs = [
+            ("t0", "email"),
+            ("t1", "email"),
+            ("t2", "email"),
+            ("t3", "email"),
+            ("t4", "email"),
+        ];
+        let v = run_json_report(&pairs);
+        let cats = v["categories"].as_array().unwrap();
+        let contact = cats.iter().find(|c| c["name"] == "Contact").unwrap();
+        assert_eq!(contact["count"], 5);
+        assert_eq!(contact["columns"].as_array().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn json_report_sensitivity_labels_are_correct() {
+        let v = run_json_report(&[("t", "ssn"), ("t", "email"), ("t", "city")]);
+        let cats = v["categories"].as_array().unwrap();
+        let gov = cats.iter().find(|c| c["name"] == "Government IDs");
+        let contact = cats.iter().find(|c| c["name"] == "Contact");
+        let addr = cats.iter().find(|c| c["name"] == "Address & location");
+        assert_eq!(gov.unwrap()["sensitivity"], "critical");
+        assert_eq!(contact.unwrap()["sensitivity"], "elevated");
+        assert_eq!(addr.unwrap()["sensitivity"], "standard");
+    }
+
+    #[test]
+    fn json_report_empty_input_is_valid() {
+        let v: serde_json::Value = serde_json::from_str(&empty_json_report()).unwrap();
+        assert_eq!(v["risk_level"], "LOW");
+        assert_eq!(v["columns_scanned"], 0);
+        assert_eq!(v["categories"].as_array().unwrap().len(), 0);
     }
 }

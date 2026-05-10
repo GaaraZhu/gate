@@ -67,6 +67,9 @@ enum Commands {
         /// Show all detected columns in the Top Findings section (not truncated)
         #[arg(long)]
         verbose: bool,
+        /// Emit results as JSON instead of human-readable text
+        #[arg(long)]
+        json: bool,
     },
     /// Load config, compile patterns, and report errors or warnings
     Validate,
@@ -92,7 +95,7 @@ fn main() {
             init_only,
         } => config_cmd::run(path, print, init_only),
         Commands::List => list::run(),
-        Commands::Scan { verbose } => scan::run(verbose),
+        Commands::Scan { verbose, json } => scan::run(verbose, json),
         Commands::Validate => validate::run(),
         Commands::Enable => enable_disable::run(true),
         Commands::Disable => enable_disable::run(false),
