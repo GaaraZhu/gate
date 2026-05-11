@@ -22,7 +22,7 @@ pub fn run(harness: &str, scope: &str, mcp: Option<&str>, mcp_cmd: Option<&str>)
         });
         match harness {
             "claude-code" => {
-                let path = match claude_settings_path() {
+                let path = match claude_mcp_config_path() {
                     Ok(p) => p,
                     Err(e) => exit_with_error(&format!("cannot resolve settings path: {e}")),
                 };
@@ -247,6 +247,13 @@ fn claude_settings_path() -> Result<PathBuf, String> {
     let home =
         std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
     Ok(PathBuf::from(home).join(".claude/settings.json"))
+}
+
+/// Claude Code stores MCP servers in ~/.claude.json (not settings.json).
+fn claude_mcp_config_path() -> Result<PathBuf, String> {
+    let home =
+        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    Ok(PathBuf::from(home).join(".claude.json"))
 }
 
 fn opencode_config_path() -> Result<PathBuf, String> {
