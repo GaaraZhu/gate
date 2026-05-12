@@ -1,4 +1,4 @@
-use crate::init::entry_has_gate_hook;
+use crate::init::{copilot_entry_has_gate_hook, entry_has_gate_hook, find_git_root};
 use crate::init_opencode::{has_gate_header, plugin_path};
 use common::config::config_path;
 use common::error::exit_with_error;
@@ -12,6 +12,7 @@ enum Action {
     Hook(PathBuf),
     ConfigDir(PathBuf),
     Plugin(PathBuf),
+    CopilotHook(PathBuf),
 }
 
 impl Action {
@@ -20,6 +21,7 @@ impl Action {
             Action::Hook(p) => format!("Remove gate hook entry from {}", p.display()),
             Action::ConfigDir(p) => format!("Delete config directory {}", p.display()),
             Action::Plugin(p) => format!("Delete opencode plugin {}", p.display()),
+            Action::CopilotHook(p) => format!("Remove gate hook entry from {}", p.display()),
         }
     }
 }
@@ -59,6 +61,9 @@ fn collect_actions() -> Vec<Action> {
     let mut actions = Vec::new();
 
     if let Some(a) = plan_remove_hook() {
+        actions.push(a);
+    }
+    if let Some(a) = plan_remove_copilot_hook() {
         actions.push(a);
     }
     if let Some(a) = plan_remove_config() {
@@ -114,6 +119,25 @@ fn plan_remove_plugin(scope: &str) -> Option<Action> {
     }
 }
 
+fn plan_remove_copilot_hook() -> Option<Action> {
+    let root = find_git_root()?;
+    let path = root.join(".github/hooks/PreToolUse.json");
+    if !path.exists() {
+        return None;
+    }
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let settings: Value = serde_json::from_str(&contents).ok()?;
+    let arr = settings
+        .get("hooks")
+        .and_then(|h| h.get("PreToolUse"))
+        .and_then(|p| p.as_array())?;
+    if arr.iter().any(copilot_entry_has_gate_hook) {
+        Some(Action::CopilotHook(path))
+    } else {
+        None
+    }
+}
+
 fn execute_action(action: &Action) {
     match action {
         Action::Hook(path) => {
@@ -145,7 +169,42 @@ fn execute_action(action: &Action) {
             Ok(()) => println!("Deleted opencode plugin {}", path.display()),
             Err(e) => eprintln!("gate: failed to remove {}: {e}", path.display()),
         },
+        Action::CopilotHook(path) => {
+            let contents = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("gate: failed to read {}: {e}", path.display());
+                    return;
+                }
+            };
+            let mut settings: Value = match serde_json::from_str(&contents) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("gate: failed to parse {}: {e}", path.display());
+                    return;
+                }
+            };
+            strip_copilot_gate_hook(&mut settings);
+            match write_atomic(path, &settings) {
+                Ok(()) => println!("Removed hook from {}", path.display()),
+                Err(e) => eprintln!("gate: failed to write {}: {e}", path.display()),
+            }
+        }
     }
+}
+
+fn strip_copilot_gate_hook(settings: &mut Value) -> bool {
+    let arr = match settings
+        .get_mut("hooks")
+        .and_then(|h| h.get_mut("PreToolUse"))
+        .and_then(|p| p.as_array_mut())
+    {
+        Some(a) => a,
+        None => return false,
+    };
+    let before = arr.len();
+    arr.retain(|entry| !copilot_entry_has_gate_hook(entry));
+    arr.len() < before
 }
 
 /// Remove all gate hook entries from `settings["hooks"]["PreToolUse"]`.
@@ -371,5 +430,109 @@ mod tests {
         fs::write(&path, content).unwrap();
         let contents = fs::read_to_string(&path).unwrap();
         assert!(has_gate_header(&contents));
+    }
+
+    // ── strip_copilot_gate_hook ──────────────────────────────────────────────
+
+    #[test]
+    fn strip_copilot_noop_when_no_hooks_key() {
+        let mut s = json!({});
+        assert!(!strip_copilot_gate_hook(&mut s));
+    }
+
+    #[test]
+    fn strip_copilot_removes_gate_entry() {
+        let mut s = json!({
+            "version": 1,
+            "hooks": {
+                "PreToolUse": [
+                    {"type": "command", "bash": "gate hook --format copilot"}
+                ]
+            }
+        });
+        assert!(strip_copilot_gate_hook(&mut s));
+        assert!(s["hooks"]["PreToolUse"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn strip_copilot_removes_absolute_path_variant() {
+        let mut s = json!({
+            "version": 1,
+            "hooks": {
+                "PreToolUse": [
+                    {"type": "command", "bash": "/usr/local/bin/gate hook --format copilot"}
+                ]
+            }
+        });
+        assert!(strip_copilot_gate_hook(&mut s));
+        assert!(s["hooks"]["PreToolUse"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn strip_copilot_preserves_unrelated_entries() {
+        let mut s = json!({
+            "version": 1,
+            "hooks": {
+                "PreToolUse": [
+                    {"type": "command", "bash": "other-hook --check"},
+                    {"type": "command", "bash": "gate hook --format copilot"}
+                ]
+            }
+        });
+        assert!(strip_copilot_gate_hook(&mut s));
+        let arr = s["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["bash"].as_str().unwrap(), "other-hook --check");
+    }
+
+    #[test]
+    fn strip_copilot_noop_when_no_gate_entry() {
+        let mut s = json!({
+            "version": 1,
+            "hooks": {
+                "PreToolUse": [
+                    {"type": "command", "bash": "other-hook --check"}
+                ]
+            }
+        });
+        assert!(!strip_copilot_gate_hook(&mut s));
+        assert_eq!(s["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    }
+
+    // ── execute_action: CopilotHook ──────────────────────────────────────────
+
+    #[test]
+    fn execute_copilot_hook_writes_updated_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("PreToolUse.json");
+        let settings = json!({
+            "version": 1,
+            "hooks": {
+                "PreToolUse": [
+                    {"type": "command", "bash": "gate hook --format copilot"}
+                ]
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+        execute_action(&Action::CopilotHook(path.clone()));
+        let result: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(result["hooks"]["PreToolUse"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn execute_copilot_hook_leaves_no_tmp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("PreToolUse.json");
+        let settings = json!({
+            "version": 1,
+            "hooks": {
+                "PreToolUse": [
+                    {"type": "command", "bash": "gate hook --format copilot"}
+                ]
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+        execute_action(&Action::CopilotHook(path.clone()));
+        assert!(!dir.path().join("PreToolUse.json.gate_tmp").exists());
     }
 }

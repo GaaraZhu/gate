@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 const HOOK_COMMAND: &str = "gate hook";
+const COPILOT_HOOK_COMMAND: &str = "gate hook --format copilot";
 
 pub fn run(
     harness: &str,
@@ -47,8 +48,15 @@ pub fn run(
                 };
                 wrap_mcp_opencode(&path, filter.as_deref(), yes);
             }
+            "copilot-cli" => {
+                let path = match copilot_mcp_path(scope) {
+                    Ok(p) => p,
+                    Err(e) => exit_with_error(&e),
+                };
+                wrap_mcp_claude(&path, filter.as_deref(), yes);
+            }
             _ => exit_with_error(&format!(
-                "--wrap-mcp is only supported for claude-code and opencode harnesses \
+                "--wrap-mcp is only supported for claude-code, opencode, and copilot-cli harnesses \
                  (got '{harness}')"
             )),
         }
@@ -77,8 +85,15 @@ pub fn run(
                 };
                 register_mcp_server_opencode(&path, server_name, cmd_str);
             }
+            "copilot-cli" => {
+                let path = match copilot_mcp_path(scope) {
+                    Ok(p) => p,
+                    Err(e) => exit_with_error(&e),
+                };
+                register_mcp_server(&path, server_name, cmd_str);
+            }
             _ => exit_with_error(&format!(
-                "MCP registration is only supported for claude-code and opencode harnesses \
+                "MCP registration is only supported for claude-code, opencode, and copilot-cli harnesses \
                  (got '{harness}')"
             )),
         }
@@ -94,8 +109,9 @@ pub fn run(
             run_with_path(&path);
         }
         "opencode" => crate::init_opencode::run(scope),
+        "copilot-cli" => init_copilot_cli(),
         _ => exit_with_error(&format!(
-            "unsupported harness '{harness}'; supported: claude-code, opencode. \
+            "unsupported harness '{harness}'; supported: claude-code, opencode, copilot-cli. \
              Usage: gate init --harness <harness>"
         )),
     }
@@ -300,6 +316,18 @@ fn claude_code_mcp_path(scope: &str) -> Result<PathBuf, String> {
     let home =
         std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
     Ok(PathBuf::from(home).join(".claude.json"))
+}
+
+/// Resolve the Copilot CLI MCP config path for the given scope.
+/// "project" → ./.mcp.json (same shared format as Claude Code project scope);
+/// anything else ("user", "global") → ~/.copilot/mcp-config.json.
+fn copilot_mcp_path(scope: &str) -> Result<PathBuf, String> {
+    if scope == "project" {
+        return Ok(PathBuf::from(".mcp.json"));
+    }
+    let home =
+        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    Ok(PathBuf::from(home).join(".copilot/mcp-config.json"))
 }
 
 /// Resolve the opencode config path for the given scope.
@@ -593,6 +621,115 @@ fn print_wrap_plan(
     }
 }
 
+// ── Copilot CLI hook installation ────────────────────────────────────────────
+
+fn init_copilot_cli() {
+    let repo_root = match find_git_root() {
+        Some(r) => r,
+        None => exit_with_error(
+            "not inside a git repository; gate init --harness copilot-cli requires a git repository",
+        ),
+    };
+    let path = repo_root.join(".github/hooks/PreToolUse.json");
+    run_copilot_with_path(&path);
+}
+
+fn run_copilot_with_path(path: &Path) {
+    let settings = read_copilot_hook_file(path);
+    match insert_copilot_hook(settings) {
+        CopilotHookResult::AlreadyInstalled => {
+            println!("gate hook is already installed in {}", path.display());
+        }
+        CopilotHookResult::Done(updated) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                    exit_with_error(&format!("failed to create {}: {e}", parent.display()))
+                });
+            }
+            write_atomic(path, &updated).unwrap_or_else(|e| {
+                exit_with_error(&format!("failed to write {}: {e}", path.display()))
+            });
+            println!("gate hook installed in {}", path.display());
+            println!("Run `gate config` to define which tools to intercept.");
+        }
+    }
+}
+
+enum CopilotHookResult {
+    AlreadyInstalled,
+    Done(Value),
+}
+
+fn read_copilot_hook_file(path: &Path) -> Value {
+    if !path.exists() {
+        return json!({"version": 1, "hooks": {}});
+    }
+    let contents = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to read {}: {e}", path.display())));
+    serde_json::from_str(&contents)
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to parse {}: {e}", path.display())))
+}
+
+fn insert_copilot_hook(mut settings: Value) -> CopilotHookResult {
+    normalize_copilot_settings(&mut settings);
+
+    let arr = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    if arr
+        .iter()
+        .any(|e| e.get("bash").and_then(|b| b.as_str()) == Some(COPILOT_HOOK_COMMAND))
+    {
+        return CopilotHookResult::AlreadyInstalled;
+    }
+
+    let arr = settings["hooks"]["PreToolUse"].as_array_mut().unwrap();
+    arr.retain(|entry| !copilot_entry_has_gate_hook(entry));
+    arr.push(json!({"type": "command", "bash": COPILOT_HOOK_COMMAND}));
+
+    CopilotHookResult::Done(settings)
+}
+
+fn normalize_copilot_settings(settings: &mut Value) {
+    if !settings.is_object() {
+        *settings = json!({"version": 1, "hooks": {}});
+    }
+    let obj = settings.as_object_mut().unwrap();
+    obj.entry("version".to_string()).or_insert(json!(1));
+    let hooks = obj.entry("hooks".to_string()).or_insert_with(|| json!({}));
+    if !hooks.is_object() {
+        *hooks = json!({});
+    }
+    let pretu = hooks
+        .as_object_mut()
+        .unwrap()
+        .entry("PreToolUse".to_string())
+        .or_insert_with(|| json!([]));
+    if !pretu.is_array() {
+        *pretu = json!([]);
+    }
+}
+
+/// Returns true if the entry's `bash` field is any variant of `gate hook ...`.
+pub(crate) fn copilot_entry_has_gate_hook(entry: &Value) -> bool {
+    entry
+        .get("bash")
+        .and_then(|b| b.as_str())
+        .map(is_gate_hook_variant)
+        .unwrap_or(false)
+}
+
+/// Walk up from CWD to find the root of the current git repository.
+pub(crate) fn find_git_root() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -811,6 +948,38 @@ mod tests {
     fn opencode_config_path_project_is_relative() {
         let path = opencode_config_path("project").unwrap();
         assert_eq!(path, PathBuf::from("opencode.json"));
+    }
+
+    // copilot_mcp_path
+
+    #[test]
+    fn copilot_mcp_path_global_uses_home() {
+        let saved = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", "/test/home") };
+        let path = copilot_mcp_path("global").unwrap();
+        match saved {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(path, PathBuf::from("/test/home/.copilot/mcp-config.json"));
+    }
+
+    #[test]
+    fn copilot_mcp_path_user_uses_home() {
+        let saved = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", "/test/home") };
+        let path = copilot_mcp_path("user").unwrap();
+        match saved {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(path, PathBuf::from("/test/home/.copilot/mcp-config.json"));
+    }
+
+    #[test]
+    fn copilot_mcp_path_project_is_relative() {
+        let path = copilot_mcp_path("project").unwrap();
+        assert_eq!(path, PathBuf::from(".mcp.json"));
     }
 
     // register_mcp_server (claude-code, project scope → .mcp.json)
@@ -1130,5 +1299,113 @@ mod tests {
         let filter = parse_servers_filter(Some("postgres"));
         wrap_mcp_claude(&path, filter.as_deref(), false);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    // ── copilot-cli init ──────────────────────────────────────────────────────
+
+    fn tmp_copilot_path() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".github/hooks/PreToolUse.json");
+        (dir, path)
+    }
+
+    #[test]
+    fn copilot_creates_hook_file_from_scratch() {
+        let (_dir, path) = tmp_copilot_path();
+        run_copilot_with_path(&path);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["version"], json!(1));
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["bash"].as_str().unwrap(), COPILOT_HOOK_COMMAND);
+        assert_eq!(arr[0]["type"].as_str().unwrap(), "command");
+    }
+
+    #[test]
+    fn copilot_idempotent_on_second_run() {
+        let (_dir, path) = tmp_copilot_path();
+        run_copilot_with_path(&path);
+        run_copilot_with_path(&path);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        let gate_count = arr
+            .iter()
+            .filter(|e| e["bash"].as_str() == Some(COPILOT_HOOK_COMMAND))
+            .count();
+        assert_eq!(gate_count, 1);
+    }
+
+    #[test]
+    fn copilot_preserves_existing_hooks() {
+        let (_dir, path) = tmp_copilot_path();
+        let initial = json!({
+            "version": 1,
+            "hooks": {
+                "PreToolUse": [
+                    {"type": "command", "bash": "other-hook --check"}
+                ]
+            }
+        });
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string_pretty(&initial).unwrap()).unwrap();
+        run_copilot_with_path(&path);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        let cmds: Vec<&str> = arr.iter().filter_map(|e| e["bash"].as_str()).collect();
+        assert!(cmds.contains(&"other-hook --check"));
+        assert!(cmds.contains(&COPILOT_HOOK_COMMAND));
+    }
+
+    #[test]
+    fn copilot_replaces_old_gate_variant() {
+        let (_dir, path) = tmp_copilot_path();
+        let initial = json!({
+            "version": 1,
+            "hooks": {
+                "PreToolUse": [
+                    {"type": "command", "bash": "/usr/local/bin/gate hook --format copilot"}
+                ]
+            }
+        });
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string_pretty(&initial).unwrap()).unwrap();
+        run_copilot_with_path(&path);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["bash"].as_str().unwrap(), COPILOT_HOOK_COMMAND);
+    }
+
+    #[test]
+    fn copilot_write_is_valid_json() {
+        let (_dir, path) = tmp_copilot_path();
+        run_copilot_with_path(&path);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(serde_json::from_str::<Value>(&contents).is_ok());
+    }
+
+    #[test]
+    fn copilot_entry_has_gate_hook_detects_exact() {
+        let entry = json!({"type": "command", "bash": "gate hook --format copilot"});
+        assert!(copilot_entry_has_gate_hook(&entry));
+    }
+
+    #[test]
+    fn copilot_entry_has_gate_hook_detects_absolute_path() {
+        let entry = json!({"type": "command", "bash": "/usr/local/bin/gate hook --format copilot"});
+        assert!(copilot_entry_has_gate_hook(&entry));
+    }
+
+    #[test]
+    fn copilot_entry_has_gate_hook_ignores_other_tools() {
+        let entry = json!({"type": "command", "bash": "other-hook --check"});
+        assert!(!copilot_entry_has_gate_hook(&entry));
+    }
+
+    #[test]
+    fn copilot_entry_has_gate_hook_ignores_non_bash_field() {
+        let entry = json!({"type": "command", "command": "gate hook --format copilot"});
+        assert!(!copilot_entry_has_gate_hook(&entry));
     }
 }

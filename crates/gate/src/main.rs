@@ -27,7 +27,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// PreToolUse hook: rewrite matching Bash commands to route through gate run
-    Hook,
+    Hook {
+        /// Output format: claude-code (default) or copilot
+        #[arg(long, default_value = "claude-code")]
+        format: String,
+    },
     /// Execute a tool with Gate 1 + Gate 2 PII redaction on its JSON output.
     /// With no args, reads JSON from stdin and applies Gate 2 directly.
     Run {
@@ -109,7 +113,7 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Hook => hook::run(),
+        Commands::Hook { format } => hook::run(&format),
         Commands::Run { verbose, args } => run::run(args, verbose),
         Commands::Init {
             harness,

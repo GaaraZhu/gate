@@ -8,6 +8,9 @@
 .mcp.json
 opencode.json
 
+# Copilot CLI hook (use `gate init --harness copilot-cli` to set up)
+.github/hooks/PreToolUse.json
+
 # Editor
 .idea/
 .vscode/

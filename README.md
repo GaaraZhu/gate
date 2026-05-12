@@ -25,7 +25,7 @@ The agent asked for all users in plain English; `gate` intercepted the query and
 
 ![gate blocking PII in a Claude Code session using tkpsql](assets/demo-claude-code.jpg)
 
-Also works with OpenCode — see the [full list of supported harnesses](#how-it-works).
+Also works with OpenCode and GitHub Copilot CLI — see the [full list of supported harnesses](#how-it-works).
 
 ## Scan your schema
 
@@ -140,9 +140,14 @@ If you have not yet created a config, run `gate config --init-only` first to gen
    gate init --harness opencode
    # OpenCode — project-scoped
    gate init --harness opencode --scope project
+
+   # GitHub Copilot CLI — project-scoped (run from repo root)
+   gate init --harness copilot-cli
    ```
 
    Restart your opencode session after running `gate init` to load the plugin.
+
+   For Copilot CLI, `gate init` writes `.github/hooks/PreToolUse.json` in the current git repository root. The file is gitignored by default — each developer runs `gate init --harness copilot-cli` once in their local clone.
 
 4. *(Optional)* **Register MCP server proxies** for any MCP servers your agent uses.
 
@@ -165,6 +170,11 @@ If you have not yet created a config, run `gate config --init-only` first to gen
 
    # OpenCode
    gate init --harness opencode --wrap-mcp --yes
+
+   # Copilot CLI — project-level .mcp.json (dry-run)
+   gate init --harness copilot-cli --scope project --wrap-mcp
+   # Copilot CLI — user-level ~/.copilot/mcp-config.json (dry-run)
+   gate init --harness copilot-cli --wrap-mcp
    ```
 
    Or register a single server manually:
@@ -178,6 +188,11 @@ If you have not yet created a config, run `gate config --init-only` first to gen
 
    # OpenCode
    gate init --harness opencode --mcp postgres --mcp-cmd "uvx mcp-server-postgres"
+
+   # Copilot CLI — user-level (~/.copilot/mcp-config.json)
+   gate init --harness copilot-cli --mcp postgres --mcp-cmd "uvx mcp-server-postgres"
+   # Copilot CLI — project-level (.mcp.json)
+   gate init --harness copilot-cli --scope project --mcp postgres --mcp-cmd "uvx mcp-server-postgres"
    ```
 
    Both approaches register `gate mcp` as a transparent proxy in front of each MCP server so tool results are redacted before reaching the model.
@@ -194,17 +209,18 @@ Run `gate validate` to confirm your config is valid before the first session.
 
 Every Bash command the AI tries to run passes through `gate hook` first. Commands that match a configured tool are silently rewritten to `gate run -- <original command>`, which applies two sequential detection gates and returns sanitized JSON. The AI sees the same JSON structure as before, with PII values replaced by typed placeholders like `[PII:email]`.
 
-The rewrite is **enforcing** in both supported harnesses — the AI cannot bypass it:
+The rewrite is **enforcing** in all supported harnesses — the AI cannot bypass it:
 
 - **Claude Code** — registered as a [`PreToolUse` hook](https://docs.anthropic.com/en/docs/claude-code/hooks) in `~/.claude/settings.json`; Claude Code replaces the command via `updatedInput` before running it.
 - **OpenCode** — a TypeScript plugin's `tool.execute.before` handler mutates `output.args.command` before the subprocess spawns; same guarantee as Claude Code.
+- **GitHub Copilot CLI** — registered as a `PreToolUse` hook in `.github/hooks/PreToolUse.json`; Copilot CLI replaces the command via `modifiedArgs` before running it.
 
 Humans and CI scripts running outside the agent harness are unaffected — no wrapper scripts are installed on PATH.
 
 ```
 AI asks to run: tkpsql query --sql "SELECT * FROM users"
                         │
-         harness hook fires (PreToolUse / tool.execute.before)
+         harness hook fires (PreToolUse / tool.execute.before / Copilot PreToolUse)
                         │
               gate hook rewrites to: gate run -- tkpsql query --sql "..."
                         │
@@ -243,6 +259,7 @@ Register a proxy for an MCP server. If you already have servers configured, `--w
 gate init --wrap-mcp
 gate init --scope project --wrap-mcp          # project-level ./.mcp.json
 gate init --harness opencode --wrap-mcp
+gate init --harness copilot-cli --wrap-mcp    # user-level ~/.copilot/mcp-config.json
 
 # Convert only specific servers
 gate init --wrap-mcp --servers postgres,github
@@ -255,6 +272,7 @@ gate init --wrap-mcp --servers postgres,github --yes
 gate init --mcp postgres --mcp-cmd "uvx mcp-server-postgres"
 gate init --scope project --mcp postgres --mcp-cmd "uvx mcp-server-postgres"
 gate init --harness opencode --mcp postgres --mcp-cmd "uvx mcp-server-postgres"
+gate init --harness copilot-cli --mcp postgres --mcp-cmd "uvx mcp-server-postgres"
 ```
 
 This writes an entry to the harness MCP config that routes `postgres` calls through `gate mcp -- uvx mcp-server-postgres`.
@@ -534,10 +552,6 @@ Raise `confidence_threshold` (e.g. to `0.9`) to reduce over-redaction, or narrow
 **`_gate_summary` warns about `SELECT *`.**
 
 Gate 1 can't infer column types from a wildcard query, so every value is passed to Gate 2's regex scanner. Use an explicit column list (`SELECT id, status, created_at FROM users`) to skip the warning and avoid scanning non-PII columns.
-
-## Roadmap
-
-**GitHub Copilot CLI** — deferred to a future release. Copilot CLI's `preToolUse` hook only supports deny-with-suggestion (no transparent rewrite), which makes the integration *advisory* — strictly safer than no hook, but the AI could in principle ignore the suggested rewrite. We're holding the integration until either Copilot CLI gains an `updatedInput` equivalent or the user demand justifies shipping the advisory-only mode.
 
 ## Contributing
 

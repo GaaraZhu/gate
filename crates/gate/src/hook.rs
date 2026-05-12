@@ -7,17 +7,21 @@ use common::config::Config;
 use serde_json::{json, Value};
 use std::io::{self, Read};
 
-pub fn run() {
+pub fn run(format: &str) {
+    if format != "claude-code" && format != "copilot" {
+        eprintln!("gate hook: unknown format '{format}'; supported: claude-code, copilot");
+        std::process::exit(1);
+    }
     let mut stdin = String::new();
     io::stdin().read_to_string(&mut stdin).unwrap_or_default();
 
     // Load config; on failure passthrough so a bad config never blocks every Bash command
     let config = Config::load().unwrap_or_default();
 
-    if let Some(output) = process(&stdin, &config) {
+    if let Some(output) = process(&stdin, &config, format == "copilot") {
         print!("{}", output);
     }
-    // No output → passthrough (Claude Code allows the original command)
+    // No output → passthrough (both Claude Code and Copilot CLI treat empty stdout as allow)
 }
 
 fn is_disabled_by_env() -> bool {
@@ -27,7 +31,7 @@ fn is_disabled_by_env() -> bool {
 }
 
 /// Returns `Some(json_string)` to rewrite, `None` to pass through unchanged.
-fn process(stdin: &str, config: &Config) -> Option<String> {
+fn process(stdin: &str, config: &Config, copilot: bool) -> Option<String> {
     if !config.enabled || is_disabled_by_env() {
         return None;
     }
@@ -108,16 +112,26 @@ fn process(stdin: &str, config: &Config) -> Option<String> {
         );
     }
 
-    Some(
-        json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
+    if copilot {
+        Some(
+            json!({
                 "permissionDecision": "allow",
-                "updatedInput": updated_input,
-            }
-        })
-        .to_string(),
-    )
+                "modifiedArgs": updated_input,
+            })
+            .to_string(),
+        )
+    } else {
+        Some(
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "updatedInput": updated_input,
+                }
+            })
+            .to_string(),
+        )
+    }
 }
 
 /// Rewrite `tokens` so that the token at `tool_idx` is replaced with `json_tool` and
@@ -157,6 +171,11 @@ mod tests {
     use std::sync::Mutex;
 
     static LOCK: Mutex<()> = Mutex::new(());
+
+    /// Shorthand for the claude-code output format (false = not copilot).
+    fn process_cc(stdin: &str, config: &Config) -> Option<String> {
+        process(stdin, config, false)
+    }
 
     fn make_config(entries: &[(&str, Option<&str>, Option<&str>)]) -> Config {
         let tools = entries
@@ -202,8 +221,7 @@ mod tests {
         let _guard = LOCK.lock().unwrap();
         let mut config = default_config();
         config.enabled = false;
-        // Even a normally-intercepted tool must passthrough when disabled.
-        assert!(process(
+        assert!(process_cc(
             &make_input("tkpsql --sql 'SELECT email FROM users'"),
             &config
         )
@@ -214,7 +232,7 @@ mod tests {
     fn passthrough_when_env_disabled() {
         let _guard = LOCK.lock().unwrap();
         unsafe { std::env::set_var("GATE_DISABLED", "1") };
-        let result = process(
+        let result = process_cc(
             &make_input("tkpsql --sql 'SELECT email FROM users'"),
             &default_config(),
         );
@@ -226,7 +244,7 @@ mod tests {
     fn env_disabled_true_string() {
         let _guard = LOCK.lock().unwrap();
         unsafe { std::env::set_var("GATE_DISABLED", "true") };
-        let result = process(
+        let result = process_cc(
             &make_input("tkpsql --sql 'SELECT email FROM users'"),
             &default_config(),
         );
@@ -238,7 +256,7 @@ mod tests {
     fn env_disabled_zero_does_not_disable() {
         let _guard = LOCK.lock().unwrap();
         unsafe { std::env::set_var("GATE_DISABLED", "0") };
-        let result = process(
+        let result = process_cc(
             &make_input("tkpsql --sql 'SELECT email FROM users'"),
             &default_config(),
         );
@@ -250,15 +268,15 @@ mod tests {
     fn passthrough_non_intercepted() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        assert!(process(&make_input("ls -la"), &config).is_none());
-        assert!(process(&make_input("grep foo bar.txt"), &config).is_none());
+        assert!(process_cc(&make_input("ls -la"), &config).is_none());
+        assert!(process_cc(&make_input("grep foo bar.txt"), &config).is_none());
     }
 
     #[test]
     fn rewrite_tkpsql() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(
+        let out = process_cc(
             &make_input("tkpsql --sql 'SELECT email FROM users'"),
             &config,
         )
@@ -275,7 +293,7 @@ mod tests {
     fn rewrite_tkdbr() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(
+        let out = process_cc(
             &make_input("tkdbr --sql 'SELECT phone FROM contacts'"),
             &config,
         )
@@ -291,7 +309,7 @@ mod tests {
     fn rewrite_mysql() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(&make_input("mysql -e 'SELECT ssn FROM patients'"), &config).unwrap();
+        let out = process_cc(&make_input("mysql -e 'SELECT ssn FROM patients'"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -303,7 +321,7 @@ mod tests {
     fn rewrite_psql() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(&make_input("psql -c 'SELECT phone FROM contacts'"), &config).unwrap();
+        let out = process_cc(&make_input("psql -c 'SELECT phone FROM contacts'"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -315,21 +333,21 @@ mod tests {
     fn loop_avoidance() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        assert!(process(&make_input("gate run -- tkpsql --sql 'SELECT 1'"), &config).is_none());
+        assert!(process_cc(&make_input("gate run -- tkpsql --sql 'SELECT 1'"), &config).is_none());
     }
 
     #[test]
     fn invalid_json_passthrough() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        assert!(process("not json at all", &config).is_none());
+        assert!(process_cc("not json at all", &config).is_none());
     }
 
     #[test]
     fn permission_decision_is_allow() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(&make_input("psql -c 'SELECT phone FROM contacts'"), &config).unwrap();
+        let out = process_cc(&make_input("psql -c 'SELECT phone FROM contacts'"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             v["hookSpecificOutput"]["permissionDecision"]
@@ -343,7 +361,7 @@ mod tests {
     fn full_path_basename_matched() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        assert!(process(
+        assert!(process_cc(
             &make_input("/usr/local/bin/tkpsql --sql 'SELECT 1'"),
             &config
         )
@@ -354,7 +372,7 @@ mod tests {
     fn passthrough_when_tool_not_in_config() {
         let _guard = LOCK.lock().unwrap();
         let config = make_config(&[]);
-        assert!(process(
+        assert!(process_cc(
             &make_input("tkpsql --sql 'SELECT email FROM users'"),
             &config
         )
@@ -365,7 +383,7 @@ mod tests {
     fn command_with_quoted_sql_preserved() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(
+        let out = process_cc(
             &make_input(r#"tkpsql --sql "SELECT 'a b' FROM t""#),
             &config,
         )
@@ -382,15 +400,14 @@ mod tests {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
         let input = make_input("tkpsql --sql 'unclosed");
-        assert!(process(&input, &config).is_none());
+        assert!(process_cc(&input, &config).is_none());
     }
 
     #[test]
     fn env_var_prefix_intercepted() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        // PGPASSWORD=x prefix must not prevent psql from being detected
-        let out = process(
+        let out = process_cc(
             &make_input("PGPASSWORD=secret psql -c 'SELECT email FROM users'"),
             &config,
         )
@@ -406,7 +423,7 @@ mod tests {
     fn multiple_env_vars_intercepted() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(
+        let out = process_cc(
             &make_input("PGPASSWORD=x PGSSLMODE=require psql -c 'SELECT id FROM t'"),
             &config,
         )
@@ -431,7 +448,7 @@ mod tests {
             }
         })
         .to_string();
-        let out = process(&input, &config).unwrap();
+        let out = process_cc(&input, &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             v["hookSpecificOutput"]["updatedInput"]["restart"],
@@ -445,7 +462,7 @@ mod tests {
     fn single_wrapper_prefix_intercepted() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(
+        let out = process_cc(
             &make_input("rtk psql -c 'SELECT email FROM users'"),
             &config,
         )
@@ -461,7 +478,7 @@ mod tests {
     fn multiple_wrapper_prefixes_intercepted() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(
+        let out = process_cc(
             &make_input("wrapper1 wrapper2 psql -c 'SELECT id FROM t'"),
             &config,
         )
@@ -479,10 +496,9 @@ mod tests {
     #[test]
     fn tool_as_flag_value_not_intercepted() {
         let _guard = LOCK.lock().unwrap();
-        // psql appears as the value of --db, not as a command — must passthrough
         let config = default_config();
         assert!(
-            process(&make_input("some-tool --db psql -c 'SELECT id'"), &config).is_none(),
+            process_cc(&make_input("some-tool --db psql -c 'SELECT id'"), &config).is_none(),
             "should not intercept when tool name is a flag value"
         );
     }
@@ -491,7 +507,7 @@ mod tests {
     fn wrapper_prefix_with_json_tool_rewrites_correctly() {
         let _guard = LOCK.lock().unwrap();
         let config = make_config(&[("psql", Some("-c"), Some("psql-json"))]);
-        let out = process(
+        let out = process_cc(
             &make_input("rtk psql -c 'SELECT email FROM users'"),
             &config,
         )
@@ -512,12 +528,11 @@ mod tests {
     fn json_tool_rewrites_binary_and_flag() {
         let _guard = LOCK.lock().unwrap();
         let config = make_config(&[("psql", Some("-c"), Some("psql-json"))]);
-        let out = process(&make_input("psql -c 'SELECT email FROM users'"), &config).unwrap();
+        let out = process_cc(&make_input("psql -c 'SELECT email FROM users'"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
             .unwrap();
-        // Binary replaced and flag translated
         assert!(cmd.contains("psql-json"), "expected psql-json in: {cmd}");
         assert!(cmd.contains("--sql"), "expected --sql in: {cmd}");
         assert!(
@@ -530,7 +545,7 @@ mod tests {
     fn json_tool_flag_equals_form() {
         let _guard = LOCK.lock().unwrap();
         let config = make_config(&[("psql", Some("-c"), Some("psql-json"))]);
-        let out = process(&make_input("psql -c='SELECT id FROM t'"), &config).unwrap();
+        let out = process_cc(&make_input("psql -c='SELECT id FROM t'"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -542,7 +557,7 @@ mod tests {
     fn json_tool_preserves_env_var_prefix() {
         let _guard = LOCK.lock().unwrap();
         let config = make_config(&[("psql", Some("-c"), Some("psql-json"))]);
-        let out = process(
+        let out = process_cc(
             &make_input("PGPASSWORD=secret psql -c 'SELECT id FROM t'"),
             &config,
         )
@@ -560,7 +575,7 @@ mod tests {
     fn json_tool_mysql_rewrite() {
         let _guard = LOCK.lock().unwrap();
         let config = make_config(&[("mysql", Some("-e"), Some("mysql-json"))]);
-        let out = process(&make_input("mysql -e 'SELECT email FROM users'"), &config).unwrap();
+        let out = process_cc(&make_input("mysql -e 'SELECT email FROM users'"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -573,7 +588,7 @@ mod tests {
     fn json_tool_sqlcmd_rewrite() {
         let _guard = LOCK.lock().unwrap();
         let config = make_config(&[("sqlcmd", Some("-Q"), Some("sqlcmd-json"))]);
-        let out = process(&make_input("sqlcmd -Q 'SELECT email FROM users'"), &config).unwrap();
+        let out = process_cc(&make_input("sqlcmd -Q 'SELECT email FROM users'"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -588,9 +603,8 @@ mod tests {
     #[test]
     fn no_json_tool_uses_original_command() {
         let _guard = LOCK.lock().unwrap();
-        // Tool in config but no json_tool: original command passed to gate run unchanged
         let config = make_config(&[("psql", Some("-c"), None)]);
-        let out = process(&make_input("psql -c 'SELECT id FROM t'"), &config).unwrap();
+        let out = process_cc(&make_input("psql -c 'SELECT id FROM t'"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -621,9 +635,8 @@ mod tests {
     #[test]
     fn pipe_tool_passed_through_unchanged() {
         let _guard = LOCK.lock().unwrap();
-        // Hook does NOT wrap pipe tools in sh -c — gate run applies the pipe internally.
         let config = make_pipe_config("curl", "jq -c .");
-        let out = process(&make_input("curl https://api.example.com/users"), &config).unwrap();
+        let out = process_cc(&make_input("curl https://api.example.com/users"), &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -639,7 +652,7 @@ mod tests {
     fn pipe_preserves_curl_flags() {
         let _guard = LOCK.lock().unwrap();
         let config = make_pipe_config("curl", "jq -c .");
-        let out = process(
+        let out = process_cc(
             &make_input("curl -s -H 'Authorization: Bearer tok' https://api.example.com"),
             &config,
         )
@@ -655,9 +668,8 @@ mod tests {
     #[test]
     fn pipe_nested_curl_not_rewrapped() {
         let _guard = LOCK.lock().unwrap();
-        // curl inside sh -c is a Nested match — passed through to gate run unchanged
         let config = make_pipe_config("curl", "jq -c .");
-        let out = process(
+        let out = process_cc(
             &make_input(r#"sh -c "curl https://api.example.com""#),
             &config,
         )
@@ -676,7 +688,7 @@ mod tests {
     fn sh_c_psql_intercepted() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(
+        let out = process_cc(
             &make_input(r#"sh -c "psql -c 'SELECT email FROM users'""#),
             &config,
         );
@@ -692,7 +704,7 @@ mod tests {
     fn bash_c_psql_intercepted() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(
+        let out = process_cc(
             &make_input(r#"bash -c "psql -c 'SELECT email FROM users'""#),
             &config,
         );
@@ -703,7 +715,7 @@ mod tests {
     fn docker_exec_sh_c_psql_intercepted() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(
+        let out = process_cc(
             &make_input(r#"docker exec mycontainer sh -c "psql -c 'SELECT email FROM users'""#),
             &config,
         );
@@ -718,10 +730,8 @@ mod tests {
     #[test]
     fn sh_c_nested_skips_json_tool_rewrite() {
         let _guard = LOCK.lock().unwrap();
-        // json_tool rewrite is skipped for nested invocations: psql-json may not exist
-        // in the target environment (remote container/pod)
         let config = make_config(&[("psql", Some("-c"), Some("psql-json"))]);
-        let out = process(
+        let out = process_cc(
             &make_input(r#"sh -c "psql -c 'SELECT email FROM users'""#),
             &config,
         );
@@ -742,8 +752,6 @@ mod tests {
     #[test]
     fn opencode_plugin_payload_accepted_by_hook() {
         let _guard = LOCK.lock().unwrap();
-        // The plugin sends {"tool_name":"Bash","tool_input":{"command":"<cmd>"}} —
-        // the same snake_case shape Claude Code uses. Verify process() intercepts it.
         let cmd = "tkpsql --sql 'SELECT email FROM users'";
         let payload = serde_json::json!({
             "tool_name": "Bash",
@@ -751,7 +759,7 @@ mod tests {
         })
         .to_string();
         let config = default_config();
-        let out = process(&payload, &config).unwrap();
+        let out = process_cc(&payload, &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let rewritten = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
@@ -765,7 +773,6 @@ mod tests {
     #[test]
     fn opencode_plugin_template_references_correct_json_keys() {
         let _guard = LOCK.lock().unwrap();
-        // Guard against the plugin template drifting away from what hook.rs expects.
         let tmpl = crate::init_opencode::PLUGIN_TEMPLATE;
         assert!(tmpl.contains("tool_name"), "template must send tool_name");
         assert!(tmpl.contains("tool_input"), "template must send tool_input");
@@ -785,7 +792,7 @@ mod tests {
     fn kubectl_exec_double_dash_psql_intercepted() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(
+        let out = process_cc(
             &make_input("kubectl exec mypod -- psql -c 'SELECT email FROM users'"),
             &config,
         );
@@ -801,7 +808,7 @@ mod tests {
     fn kubectl_exec_with_namespace_intercepted() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(
+        let out = process_cc(
             &make_input("kubectl exec -n production mypod -- psql -c 'SELECT email FROM users'"),
             &config,
         );
@@ -815,7 +822,7 @@ mod tests {
     fn kubectl_exec_with_it_flags_intercepted() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
-        let out = process(
+        let out = process_cc(
             &make_input("kubectl exec -it mypod -- psql -c 'SELECT email FROM users'"),
             &config,
         );
@@ -828,9 +835,8 @@ mod tests {
     #[test]
     fn kubectl_exec_double_dash_sh_c_psql_intercepted() {
         let _guard = LOCK.lock().unwrap();
-        // Both blind spots combined: -- terminator + sh -c nesting
         let config = default_config();
-        let out = process(
+        let out = process_cc(
             &make_input(r#"kubectl exec mypod -- sh -c "psql -c 'SELECT email FROM users'""#),
             &config,
         );
@@ -849,7 +855,7 @@ mod tests {
     fn kubectl_exec_double_dash_sh_c_skips_json_tool_rewrite() {
         let _guard = LOCK.lock().unwrap();
         let config = make_config(&[("psql", Some("-c"), Some("psql-json"))]);
-        let out = process(
+        let out = process_cc(
             &make_input(r#"kubectl exec mypod -- sh -c "psql -c 'SELECT email FROM users'""#),
             &config,
         );
@@ -867,7 +873,6 @@ mod tests {
     // ── chained hook input (prior hook's raw output as stdin) ─────────────────
 
     fn make_chained_input(command: &str) -> String {
-        // Simulates Claude Code passing the previous hook's full JSON output as gate's stdin.
         json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -881,10 +886,8 @@ mod tests {
     #[test]
     fn chained_hook_input_intercepted() {
         let _guard = LOCK.lock().unwrap();
-        // Claude Code chains hooks: gate receives RTK's raw output, not the original tool_input.
-        // gate hook must extract the command from hookSpecificOutput.updatedInput.command.
         let config = default_config();
-        let out = process(
+        let out = process_cc(
             &make_chained_input("rtk psql -c 'SELECT email FROM users'"),
             &config,
         );
@@ -901,7 +904,7 @@ mod tests {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
         assert!(
-            process(&make_chained_input("ls -la"), &config).is_none(),
+            process_cc(&make_chained_input("ls -la"), &config).is_none(),
             "non-intercepted command in chained input must passthrough"
         );
     }
@@ -910,7 +913,7 @@ mod tests {
     fn chained_hook_input_curl_pipe() {
         let _guard = LOCK.lock().unwrap();
         let config = make_pipe_config("curl", "jq -c .");
-        let out = process(
+        let out = process_cc(
             &make_chained_input("rtk curl http://localhost:8080/users"),
             &config,
         );
@@ -919,7 +922,6 @@ mod tests {
         let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
             .unwrap();
-        // Hook passes the command through unchanged; gate run applies the pipe.
         assert!(cmd.starts_with("gate run -- rtk curl"), "got: {cmd}");
         assert!(cmd.contains("rtk curl"), "got: {cmd}");
     }
@@ -927,7 +929,6 @@ mod tests {
     #[test]
     fn chained_hook_extra_fields_preserved() {
         let _guard = LOCK.lock().unwrap();
-        // Fields other than command in updatedInput (e.g. restart) must be preserved.
         let config = default_config();
         let input = json!({
             "hookSpecificOutput": {
@@ -940,12 +941,98 @@ mod tests {
             }
         })
         .to_string();
-        let out = process(&input, &config).unwrap();
+        let out = process_cc(&input, &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             v["hookSpecificOutput"]["updatedInput"]["restart"],
             json!(false),
             "restart field must survive chained rewrite"
         );
+    }
+
+    // ── copilot format tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn copilot_format_rewrite_emits_modified_args() {
+        let _guard = LOCK.lock().unwrap();
+        let config = default_config();
+        let out = process(
+            &make_input("psql -c 'SELECT email FROM users'"),
+            &config,
+            true,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["permissionDecision"].as_str().unwrap(), "allow");
+        let cmd = v["modifiedArgs"]["command"].as_str().unwrap();
+        assert!(cmd.starts_with("gate run -- psql"), "got: {cmd}");
+        assert!(
+            v.get("hookSpecificOutput").is_none(),
+            "must not have hookSpecificOutput"
+        );
+    }
+
+    #[test]
+    fn copilot_format_passthrough_is_none() {
+        let _guard = LOCK.lock().unwrap();
+        let config = default_config();
+        assert!(process(&make_input("ls -la"), &config, true).is_none());
+    }
+
+    #[test]
+    fn copilot_format_preserves_extra_tool_input_fields() {
+        let _guard = LOCK.lock().unwrap();
+        let config = default_config();
+        let input = json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "bash",
+            "tool_input": {
+                "command": "tkpsql --sql 'SELECT 1'",
+                "restart": false
+            }
+        })
+        .to_string();
+        let out = process(&input, &config, true).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["modifiedArgs"]["restart"], json!(false));
+        assert_eq!(v["permissionDecision"].as_str().unwrap(), "allow");
+    }
+
+    #[test]
+    fn copilot_format_tool_name_lowercase_accepted() {
+        let _guard = LOCK.lock().unwrap();
+        // Copilot sends "bash" (lowercase), Claude Code sends "Bash" — both must work.
+        let config = default_config();
+        let input = json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "bash",
+            "tool_input": { "command": "psql -c 'SELECT phone FROM users'" }
+        })
+        .to_string();
+        let out = process(&input, &config, true).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let cmd = v["modifiedArgs"]["command"].as_str().unwrap();
+        assert!(cmd.starts_with("gate run -- psql"), "got: {cmd}");
+    }
+
+    #[test]
+    fn copilot_format_with_extra_copilot_fields() {
+        let _guard = LOCK.lock().unwrap();
+        // Copilot's VS Code-compat payload includes sessionId, timestamp, cwd in addition
+        // to the standard tool_name/tool_input fields. Verify gate ignores unknown fields.
+        let config = default_config();
+        let input = json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "abc-123",
+            "timestamp": "2026-05-12T10:00:00Z",
+            "cwd": "/home/user/project",
+            "tool_name": "bash",
+            "tool_input": { "command": "psql -c 'SELECT email FROM users'" }
+        })
+        .to_string();
+        let out = process(&input, &config, true).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let cmd = v["modifiedArgs"]["command"].as_str().unwrap();
+        assert!(cmd.starts_with("gate run -- psql"), "got: {cmd}");
     }
 }
