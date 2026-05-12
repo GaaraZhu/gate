@@ -2,14 +2,14 @@
 
 PII-filtering CLI that transparently intercepts AI agent query commands and redacts sensitive data before it reaches the model context.
 
-## Status
-
-Milestone 9 (GitHub Copilot CLI) is deferred pending transparent-rewrite support in the Copilot hook.
-
 ## Notes
 `crates/gate/src/run.rs` is the production Gate 1 + Gate 2 pipeline. Loads config,
 runs gate1::extract_columns + gate1::build_plan on the SQL arg, spawns the subprocess,
 pipes stdout through common::redactor::redact. All subcommands fully implemented.
+
+`crates/mcp/` is a separate crate that provides the `gate mcp` subcommand — a stdio
+JSON-RPC proxy that forwards traffic between the AI harness and an upstream MCP server.
+It intercepts `tools/call` responses and redacts PII via Gate 2 before returning them.
 
 ## Repository structure
 
@@ -20,6 +20,7 @@ gate/
     common/             # config, PII patterns, redactor (Gate 2), error types, harness detection
     gate1/              # SQL tokenizer + column extractor (Gate 1)
     gate/               # main binary (all subcommands)
+    mcp/                # stdio MCP proxy: intercepts tools/call responses and redacts PII
 ```
 
 ## Build and test commands
@@ -31,11 +32,9 @@ cargo clippy -- -D warnings
 cargo fmt --check
 ```
 
-Run these after every step. Do not move to the next step until all pass.
-
 ## Before every commit
 
-Run all checks from the workspace root and fix any failures before committing:
+Run all checks from the workspace root and fix any failures:
 
 ```bash
 cargo fmt --all
@@ -56,21 +55,20 @@ regex = "1"
 shell-words = "1"
 anyhow = "1"
 thiserror = "1"
-tempfile = "3"   # test-only
+tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+ctrlc = { version = "3", features = ["termination"] }
 ```
 
 Gate 1 uses a hand-written SQL tokenizer — do NOT add `sqlparser-rs`.
 
-## Safety pass (required after every implementation step)
+## Safety checklist (required for any redaction changes)
 
-Run this checklist before marking any step complete:
+When modifying redaction logic (`common/redactor.rs`, `gate1/lib.rs`, `mcp/intercept.rs`), run this checklist before committing:
 
-1. **False-negative scan** — review the new/changed redaction logic and identify any PII patterns that could slip through (e.g. value types not covered by regex, Luhn bypass, forced-column path skipped).
-2. **Test coverage** — for each identified gap, add a test that would catch it. The test must fail before the fix and pass after.
-3. **Non-negotiables audit** — verify every item in the Non-negotiables section below is still upheld by the current code.
-4. **Exit criteria check** — verify milestone exit criteria are fully satisfied.
-
-Do not advance the "Current step" in this file until all four items are checked.
+1. **False-negative scan** — identify any PII patterns that could slip through the changed logic (e.g. value types not covered by regex, Luhn bypass, forced-column path skipped).
+2. **Test coverage** — for each identified gap, add a test that fails before the fix and passes after.
+3. **Non-negotiables audit** — verify every item in the Non-negotiables section below is still upheld.
 
 ## Non-negotiables
 
@@ -91,11 +89,18 @@ Do not advance the "Current step" in this file until all four items are checked.
 | `gate1/lib.rs` | Best-effort SQL parsing. Wrong here = false-negative on Gate 1, but Gate 2 catches it. Document limitations at the top of the file. |
 | `gate/hook.rs` | Runs on every Bash command — both perf and correctness matter. |
 | `gate/init.rs` | Touches the user's harness settings JSON. Idempotency and atomic writes are mandatory. |
+| `gate/init_opencode.rs` | Writes the opencode JS plugin. Same atomicity and idempotency rules as `init.rs`. |
 | `gate/run.rs` | Spawns subprocesses, handles their stdio. Most cross-component bugs live here. |
+| `gate/command.rs` | Matches tool invocations in hook payloads (direct and nested via `sh -c`). Wrong here = silent passthrough of interceptable commands. |
+| `gate/scan.rs` | Reads columnar schema JSON from stdin and classifies columns by PII tier. No false negatives — missing a column here gives the AI unredacted data. |
+| `gate/uninstall.rs` | Removes hook entries, config dir, and opencode plugins. Must be idempotent and never delete non-gate files. |
+| `gate/validate.rs` | Loads config and compiles all patterns. Must catch bad regex before the hook fires. |
+| `gate/enable_disable.rs` | Edits `enabled:` in the YAML config atomically. |
+| `mcp/lib.rs` | MCP proxy entry point — routes JSON-RPC between harness and upstream server. Perf matters; runs for the lifetime of the MCP server. |
+| `mcp/intercept.rs` | Decides which MCP messages carry tool results and redacts them. Bugs here = PII leaks through the MCP path. |
 
 ## Testing approach
 
-- Write tests **before** or **alongside** each implementation step, not after.
-- Each milestone has exit criteria — do not advance until all tests pass.
-- Milestone 2 (Gate 2 / `redactor.rs`) requires golden-file tests with realistic PII data. False-negative rate on the test corpus must be 0.
+- Write tests **before** or **alongside** code changes, not after.
+- `common/redactor.rs` requires golden-file tests with realistic PII data. False-negative rate on the test corpus must be 0.
 - Integration tests for `gate run` use a fake-tool binary (a shell script emitting known JSON for known SQL).
