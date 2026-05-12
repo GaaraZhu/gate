@@ -6,77 +6,196 @@ on:
       - 'v*'
 
 jobs:
-  release:
-    runs-on: macos-14   # Apple Silicon — native aarch64-apple-darwin
+  prepare:
+    runs-on: ubuntu-latest
     permissions:
       contents: write
-
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      sha: ${{ steps.bump.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
 
-      - name: Bump version in Cargo.toml
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Bump version
+        id: bump
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          sed -i '' "s/^version = \".*\"/version = \"${VERSION}\"/" crates/gate/Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" crates/gate/Cargo.toml
           cargo generate-lockfile
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add crates/gate/Cargo.toml Cargo.lock
           git diff --cached --quiet || git commit -m "chore: bump version to ${VERSION}"
           git push origin main
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            ext: tar.gz
+          - os: macos-14
+            target: x86_64-apple-darwin
+            ext: tar.gz
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: tar.gz
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            ext: tar.gz
+            cross_linker: aarch64-linux-gnu-gcc
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
-      - name: Build release binary
-        run: cargo build --release --target aarch64-apple-darwin
-
-      - name: Package
+      - name: Install aarch64 cross-compilation toolchain
+        if: matrix.cross_linker != ''
         run: |
-          ARCHIVE="gate-${VERSION}-aarch64-apple-darwin.tar.gz"
-          tar -czf "${ARCHIVE}" -C target/aarch64-apple-darwin/release gate
+          sudo apt-get update -q
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross_linker }}
+        run: cargo build --release --target ${{ matrix.target }}
+        shell: bash
+
+      - name: Package (tar.gz)
+        if: matrix.ext == 'tar.gz'
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          ARCHIVE="gate-${VERSION}-${{ matrix.target }}.tar.gz"
+          tar -czf "${ARCHIVE}" -C target/${{ matrix.target }}/release gate
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
 
-      - name: Compute SHA256
+      - name: Package (zip)
+        if: matrix.ext == 'zip'
+        shell: pwsh
+        run: |
+          $VERSION = "${{ needs.prepare.outputs.version }}"
+          $ARCHIVE = "gate-${VERSION}-${{ matrix.target }}.zip"
+          Compress-Archive -Path "target\${{ matrix.target }}\release\gate.exe" -DestinationPath $ARCHIVE
+          "ARCHIVE=$ARCHIVE" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Compute SHA256 (Unix)
+        if: matrix.os != 'windows-latest'
+        shell: bash
         run: |
           SHA256=$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')
-          echo "SHA256=${SHA256}" >> "$GITHUB_ENV"
-          echo "### Homebrew SHA256" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "${SHA256}  ${ARCHIVE}" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "${SHA256}" > "${ARCHIVE}.sha256"
+
+      - name: Compute SHA256 (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $SHA256 = (Get-FileHash -Algorithm SHA256 "$env:ARCHIVE").Hash.ToLower()
+          Set-Content -Path "$env:ARCHIVE.sha256" -Value $SHA256
+
+      - name: Smoke test (native targets only)
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            ./target/${{ matrix.target }}/release/gate.exe version
+          else
+            ./target/${{ matrix.target }}/release/gate version
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-${{ matrix.target }}
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Build release notes
+        run: |
+          echo "## SHA256 checksums" > release_notes.md
+          echo '```' >> release_notes.md
+          for f in artifacts/*.sha256; do
+            sha=$(cat "$f")
+            archive=$(basename "${f%.sha256}")
+            echo "${sha}  ${archive}" >> release_notes.md
+          done
+          echo '```' >> release_notes.md
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          printf '## SHA256 (for homebrew-gate formula)\n```\n%s  %s\n```\n' \
-            "${SHA256}" "${ARCHIVE}" > release_notes.md
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --notes-file release_notes.md \
-            "${ARCHIVE}"
+            artifacts/gate-*.tar.gz artifacts/gate-*.zip
+
+  homebrew:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
 
       - name: Update Homebrew formula
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+
+          SHA_MACOS_ARM=$(cat  "artifacts/gate-${VERSION}-aarch64-apple-darwin.tar.gz.sha256")
+          SHA_MACOS_INTEL=$(cat "artifacts/gate-${VERSION}-x86_64-apple-darwin.tar.gz.sha256")
+          SHA_LINUX_ARM=$(cat  "artifacts/gate-${VERSION}-aarch64-unknown-linux-gnu.tar.gz.sha256")
+          SHA_LINUX_INTEL=$(cat "artifacts/gate-${VERSION}-x86_64-unknown-linux-gnu.tar.gz.sha256")
+
           git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/GaaraZhu/homebrew-gate.git
           cd homebrew-gate
-          sed -i '' \
-            "s|url \".*\"|url \"https://github.com/GaaraZhu/gate/releases/download/${GITHUB_REF_NAME}/gate-${VERSION}-aarch64-apple-darwin.tar.gz\"|" \
-            Formula/gate.rb
-          sed -i '' \
-            "s|sha256 \".*\"|sha256 \"${SHA256}\"|" \
-            Formula/gate.rb
+
+          python3 ../scripts/update_formula.py \
+            "${VERSION}" \
+            "${SHA_MACOS_ARM}" "${SHA_MACOS_INTEL}" \
+            "${SHA_LINUX_ARM}" "${SHA_LINUX_INTEL}"
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/gate.rb
-          git commit -m "chore: update gate to ${GITHUB_REF_NAME}"
+          git commit -m "chore: update gate to v${VERSION}"
           git push

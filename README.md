@@ -111,10 +111,16 @@ If you have not yet created a config, run `gate config --init-only` first to gen
 1. **Install gate**
 
    ```bash
-   # Homebrew (recommended)
+   # Homebrew — macOS and Linux (recommended)
    brew tap GaaraZhu/gate && brew install gate
 
-   # Or via cargo
+   # cargo binstall — downloads a prebuilt binary for your platform
+   cargo binstall gate
+
+   # Direct download — grab the binary for your platform from the releases page
+   # https://github.com/GaaraZhu/gate/releases
+
+   # Build from source
    cargo install --git https://github.com/GaaraZhu/gate
    ```
 
