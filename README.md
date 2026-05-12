@@ -254,30 +254,7 @@ AI calls MCP server (tools/call)
          {"content": [{"type": "text", "text": "{\"email\": \"[PII:email]\"}"}], "_gate_summary": {...}}
 ```
 
-Register a proxy for an MCP server. If you already have servers configured, `--wrap-mcp` converts them all at once:
-
-```bash
-# Convert all existing servers (dry-run shows what would change)
-gate init --wrap-mcp
-gate init --scope project --wrap-mcp          # project-level ./.mcp.json
-gate init --harness opencode --wrap-mcp
-gate init --harness copilot-cli --wrap-mcp    # user-level ~/.copilot/mcp-config.json
-
-# Convert only specific servers
-gate init --wrap-mcp --servers postgres,github
-
-# Apply
-gate init --wrap-mcp --yes
-gate init --wrap-mcp --servers postgres,github --yes
-
-# Or register a single server manually
-gate init --mcp postgres --mcp-cmd "uvx mcp-server-postgres"
-gate init --scope project --mcp postgres --mcp-cmd "uvx mcp-server-postgres"
-gate init --harness opencode --mcp postgres --mcp-cmd "uvx mcp-server-postgres"
-gate init --harness copilot-cli --mcp postgres --mcp-cmd "uvx mcp-server-postgres"
-```
-
-This writes an entry to the harness MCP config that routes `postgres` calls through `gate mcp -- uvx mcp-server-postgres`.
+See [Quickstart](#quickstart) step 4 for setup commands (`--wrap-mcp` to convert existing servers, `--mcp` to register one manually).
 
 **What the tool returns** (never reaches the model):
 ```json
