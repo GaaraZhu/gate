@@ -627,11 +627,20 @@ fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult], verb
     println!();
 
     // Top findings section
-    println!("\x1b[1mTop Findings\x1b[0m");
+    let section_title = if verbose {
+        "All Findings"
+    } else {
+        "Top Findings"
+    };
+    println!("\x1b[1m{}\x1b[0m", section_title);
     println!("{}", "─".repeat(59));
 
-    // Show top 3 tier1 categories with examples
-    for (idx, (tier1, _)) in tier1_totals.iter().take(3).enumerate() {
+    let findings_iter: Box<dyn Iterator<Item = _>> = if verbose {
+        Box::new(tier1_totals.iter())
+    } else {
+        Box::new(tier1_totals.iter().take(3))
+    };
+    for (idx, (tier1, _)) in findings_iter.enumerate() {
         if idx > 0 {
             println!();
         }
