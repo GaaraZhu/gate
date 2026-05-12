@@ -102,7 +102,7 @@ pub fn run(
 
     match harness {
         "claude-code" => {
-            let path = match claude_settings_path() {
+            let path = match claude_settings_path(scope) {
                 Ok(p) => p,
                 Err(e) => exit_with_error(&format!("cannot resolve settings path: {e}")),
             };
@@ -301,7 +301,12 @@ fn normalize_mcp_servers(settings: &mut Value) {
     }
 }
 
-fn claude_settings_path() -> Result<PathBuf, String> {
+/// Resolve the Claude Code hook settings path for the given scope.
+/// "project" → ./.claude/settings.json; anything else ("user", "global") → ~/.claude/settings.json.
+pub(crate) fn claude_settings_path(scope: &str) -> Result<PathBuf, String> {
+    if scope == "project" {
+        return Ok(PathBuf::from(".claude/settings.json"));
+    }
     let home =
         std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
     Ok(PathBuf::from(home).join(".claude/settings.json"))
@@ -878,6 +883,26 @@ mod tests {
         run_with_path(&path);
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(serde_json::from_str::<Value>(&contents).is_ok());
+    }
+
+    // claude_settings_path
+
+    #[test]
+    fn claude_settings_path_global_uses_home() {
+        let saved = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", "/test/home") };
+        let path = claude_settings_path("global").unwrap();
+        match saved {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(path, PathBuf::from("/test/home/.claude/settings.json"));
+    }
+
+    #[test]
+    fn claude_settings_path_project_is_relative() {
+        let path = claude_settings_path("project").unwrap();
+        assert_eq!(path, PathBuf::from(".claude/settings.json"));
     }
 
     // claude_code_mcp_path

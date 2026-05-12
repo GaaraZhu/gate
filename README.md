@@ -133,8 +133,10 @@ If you have not yet created a config, run `gate config --init-only` first to gen
 3. **Register the hook** with your agent harness:
 
    ```bash
-   # Claude Code
+   # Claude Code — global (applies to all projects)
    gate init
+   # Claude Code — project-scoped (.claude/settings.json in repo root)
+   gate init --scope project
 
    # OpenCode — global
    gate init --harness opencode

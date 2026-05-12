@@ -1,4 +1,6 @@
-use crate::init::{copilot_entry_has_gate_hook, entry_has_gate_hook, find_git_root};
+use crate::init::{
+    claude_settings_path, copilot_entry_has_gate_hook, entry_has_gate_hook, find_git_root,
+};
 use crate::init_opencode::{has_gate_header, plugin_path};
 use common::config::config_path;
 use common::error::exit_with_error;
@@ -60,8 +62,10 @@ pub fn run() {
 fn collect_actions() -> Vec<Action> {
     let mut actions = Vec::new();
 
-    if let Some(a) = plan_remove_hook() {
-        actions.push(a);
+    for scope in &["global", "project"] {
+        if let Some(a) = plan_remove_hook(scope) {
+            actions.push(a);
+        }
     }
     if let Some(a) = plan_remove_copilot_hook() {
         actions.push(a);
@@ -78,8 +82,8 @@ fn collect_actions() -> Vec<Action> {
     actions
 }
 
-fn plan_remove_hook() -> Option<Action> {
-    let path = claude_settings_path().ok()?;
+fn plan_remove_hook(scope: &str) -> Option<Action> {
+    let path = claude_settings_path(scope).ok()?;
     if !path.exists() {
         return None;
     }
@@ -233,12 +237,6 @@ fn confirm(prompt: &str) -> bool {
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
-fn claude_settings_path() -> Result<PathBuf, String> {
-    let home =
-        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
-    Ok(PathBuf::from(home).join(".claude/settings.json"))
-}
-
 fn write_atomic(path: &Path, value: &Value) -> anyhow::Result<()> {
     let json_str = serde_json::to_string_pretty(value)?;
     let parent = path
@@ -271,10 +269,9 @@ mod tests {
 
     #[test]
     fn plan_hook_none_when_file_missing() {
-        // Use a nonexistent path by pointing HOME at an empty tempdir
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("HOME", dir.path()) };
-        let result = plan_remove_hook();
+        let result = plan_remove_hook("global");
         unsafe { std::env::remove_var("HOME") };
         assert!(result.is_none());
     }
@@ -292,7 +289,7 @@ mod tests {
         });
         fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
         unsafe { std::env::set_var("HOME", dir.path()) };
-        let result = plan_remove_hook();
+        let result = plan_remove_hook("global");
         unsafe { std::env::remove_var("HOME") };
         assert!(result.is_none());
     }
@@ -310,7 +307,7 @@ mod tests {
         });
         fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
         unsafe { std::env::set_var("HOME", dir.path()) };
-        let result = plan_remove_hook();
+        let result = plan_remove_hook("global");
         unsafe { std::env::remove_var("HOME") };
         assert!(matches!(result, Some(Action::Hook(_))));
     }
