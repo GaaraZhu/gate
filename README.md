@@ -256,44 +256,27 @@ AI calls MCP server (tools/call)
 
 See [Quickstart](#quickstart) step 4 for setup commands (`--wrap-mcp` to convert existing servers, `--mcp` to register one manually).
 
-**What the tool returns** (never reaches the model):
+**What the upstream MCP server returns** (never reaches the model):
 ```json
 {
-  "rows": [
+  "content": [
     {
-      "id": 1,
-      "full_name": "Alice Johnson",
-      "email": "alice.johnson@example.com",
-      "status": "active",
-      "created_at": "2023-01-15 10:30:00",
-      "last_login_at": "2024-05-06 14:22:00"
-    },
-    ...
-  ],
-  "count": 5
+      "type": "text",
+      "text": "{\"rows\": [{\"id\": 1, \"full_name\": \"Alice Johnson\", \"email\": \"alice.johnson@example.com\", \"status\": \"active\"}], \"count\": 1}"
+    }
+  ]
 }
 ```
 
 **What the AI sees**:
 ```json
 {
-  "rows": [
+  "content": [
     {
-      "id": 1,
-      "full_name": "[PII:name]",
-      "email": "[PII:email]",
-      "status": "active",
-      "created_at": "2023-01-15 10:30:00",
-      "last_login_at": "2024-05-06 14:22:00"
-    },
-    ...
-  ],
-  "count": 5,
-  "_gate_summary": {
-    "redacted": 10,
-    "types": ["name", "email"],
-    "warnings": ["SELECT * used — consider listing columns explicitly"]
-  }
+      "type": "text",
+      "text": "{\"rows\": [{\"id\": 1, \"full_name\": \"[PII:name]\", \"email\": \"[PII:email]\", \"status\": \"active\"}], \"count\": 1, \"_gate_summary\": {\"redacted\": 2, \"types\": [\"name\", \"email\"]}}"
+    }
+  ]
 }
 ```
 
