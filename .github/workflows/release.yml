@@ -172,9 +172,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          gh release delete "${{ needs.prepare.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --yes 2>/dev/null || true
           gh release create "${{ needs.prepare.outputs.tag }}" \
             --repo "${{ github.repository }}" \
-            --clobber \
             --title "${{ needs.prepare.outputs.tag }}" \
             --notes-file release_notes.md \
             artifacts/gate-*.tar.gz artifacts/gate-*.zip
