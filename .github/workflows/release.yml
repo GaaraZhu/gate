@@ -158,6 +158,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
+            --repo "${{ github.repository }}" \
             --title "${GITHUB_REF_NAME}" \
             --notes-file release_notes.md \
             artifacts/gate-*.tar.gz artifacts/gate-*.zip
