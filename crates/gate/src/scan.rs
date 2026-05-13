@@ -136,8 +136,14 @@ fn parse_columnar_json(input: &str) -> Result<Vec<(String, String)>, String> {
         return parse_psql_text_table(input);
     }
 
+    // Fall back to CSV (DBeaver, DataGrip, TablePlus, etc.)
+    let stripped = input.strip_prefix('\u{FEFF}').unwrap_or(input);
+    if stripped.lines().any(|l| l.contains(',')) {
+        return parse_csv(stripped);
+    }
+
     Err(
-        "input is not valid JSON or psql table format — pipe the output of a schema query into gate scan."
+        "input is not valid JSON, psql table format, or CSV — pipe the output of a schema query into gate scan."
             .to_string(),
     )
 }
@@ -204,6 +210,93 @@ fn parse_psql_text_table(text: &str) -> Result<Vec<(String, String)>, String> {
     }
 
     Ok(pairs)
+}
+
+/// Parse CSV export from GUI clients (DBeaver, DataGrip, TablePlus, etc.).
+/// Handles RFC 4180 quoting, UTF-8 BOM, and CRLF line endings.
+/// Expects a header row with `table_name` and `column_name` columns (case-insensitive).
+fn parse_csv(text: &str) -> Result<Vec<(String, String)>, String> {
+    let mut lines = text.lines();
+
+    let header_line = loop {
+        match lines.next() {
+            Some(line) if !line.trim().is_empty() => break line,
+            Some(_) => continue,
+            None => return Err("empty CSV input".to_string()),
+        }
+    };
+
+    let headers: Vec<String> = split_csv_row(header_line)
+        .into_iter()
+        .map(|h| h.trim().to_lowercase())
+        .collect();
+
+    let table_idx = headers
+        .iter()
+        .position(|h| h == "table_name")
+        .ok_or_else(|| {
+            "table_name column not found in CSV — query must SELECT table_name, column_name."
+                .to_string()
+        })?;
+    let column_idx = headers
+        .iter()
+        .position(|h| h == "column_name")
+        .ok_or_else(|| {
+            "column_name column not found in CSV — query must SELECT table_name, column_name."
+                .to_string()
+        })?;
+
+    let mut pairs = Vec::new();
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let cells = split_csv_row(line);
+        let table = cells
+            .get(table_idx)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        let col = cells
+            .get(column_idx)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if !table.is_empty() && !col.is_empty() {
+            pairs.push((table, col));
+        }
+    }
+
+    Ok(pairs)
+}
+
+/// Split one CSV row into fields following RFC 4180: commas delimit fields,
+/// double-quotes wrap fields that contain commas/quotes/newlines, and `""` inside
+/// a quoted field represents a literal quote character.
+fn split_csv_row(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if in_quotes => {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    field.push('"');
+                } else {
+                    in_quotes = false;
+                }
+            }
+            '"' => in_quotes = true,
+            ',' if !in_quotes => {
+                fields.push(field.clone());
+                field.clear();
+            }
+            _ => field.push(ch),
+        }
+    }
+    fields.push(field);
+    fields
 }
 
 /// Parse array-of-arrays format: `{"columns": [...], "rows": [[...], ...]}`
@@ -1269,5 +1362,93 @@ mod tests {
         assert_eq!(v["risk_level"], "LOW");
         assert_eq!(v["columns_scanned"], 0);
         assert_eq!(v["categories"].as_array().unwrap().len(), 0);
+    }
+
+    // ── CSV parsing ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn csv_basic() {
+        let csv = "table_name,column_name\nusers,email\nusers,first_name\n";
+        let pairs = parse_columnar_json(csv).unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                ("users".to_string(), "email".to_string()),
+                ("users".to_string(), "first_name".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn csv_quoted_fields() {
+        let csv = "\"table_name\",\"column_name\"\n\"users\",\"email\"\n";
+        let pairs = parse_columnar_json(csv).unwrap();
+        assert_eq!(pairs[0], ("users".to_string(), "email".to_string()));
+    }
+
+    #[test]
+    fn csv_quoted_field_with_embedded_comma() {
+        // table name containing a comma, wrapped in quotes
+        let csv = "table_name,column_name\n\"orders,archive\",customer_id\n";
+        let pairs = parse_columnar_json(csv).unwrap();
+        assert_eq!(
+            pairs[0],
+            ("orders,archive".to_string(), "customer_id".to_string())
+        );
+    }
+
+    #[test]
+    fn csv_quoted_field_with_escaped_quote() {
+        let csv = "table_name,column_name\n\"user\"\"s\",email\n";
+        let pairs = parse_columnar_json(csv).unwrap();
+        assert_eq!(pairs[0], ("user\"s".to_string(), "email".to_string()));
+    }
+
+    #[test]
+    fn csv_uppercase_headers() {
+        let csv = "TABLE_NAME,COLUMN_NAME\norders,total\n";
+        let pairs = parse_columnar_json(csv).unwrap();
+        assert_eq!(pairs[0], ("orders".to_string(), "total".to_string()));
+    }
+
+    #[test]
+    fn csv_extra_columns_ignored() {
+        let csv = "table_schema,table_name,column_name,data_type\npublic,users,email,text\n";
+        let pairs = parse_columnar_json(csv).unwrap();
+        assert_eq!(pairs[0], ("users".to_string(), "email".to_string()));
+    }
+
+    #[test]
+    fn csv_columns_in_any_order() {
+        let csv = "column_name,table_name\nemail,users\n";
+        let pairs = parse_columnar_json(csv).unwrap();
+        assert_eq!(pairs[0], ("users".to_string(), "email".to_string()));
+    }
+
+    #[test]
+    fn csv_utf8_bom_stripped() {
+        let csv = "\u{FEFF}table_name,column_name\nusers,email\n";
+        let pairs = parse_columnar_json(csv).unwrap();
+        assert_eq!(pairs[0], ("users".to_string(), "email".to_string()));
+    }
+
+    #[test]
+    fn csv_crlf_line_endings() {
+        let csv = "table_name,column_name\r\nusers,email\r\n";
+        let pairs = parse_columnar_json(csv).unwrap();
+        assert_eq!(pairs[0], ("users".to_string(), "email".to_string()));
+    }
+
+    #[test]
+    fn csv_skips_blank_lines() {
+        let csv = "table_name,column_name\nusers,email\n\norders,total\n";
+        let pairs = parse_columnar_json(csv).unwrap();
+        assert_eq!(pairs.len(), 2);
+    }
+
+    #[test]
+    fn csv_missing_table_name_column_errors() {
+        let csv = "column_name,data_type\nemail,text\n";
+        assert!(parse_columnar_json(csv).is_err());
     }
 }
