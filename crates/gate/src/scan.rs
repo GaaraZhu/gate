@@ -731,8 +731,7 @@ fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult], verb
         if idx > 0 {
             println!();
         }
-        let sens = sensitivity_label(category_weight(tier1));
-        println!("  {}    {} columns · {}", tier1, count, sens);
+        println!("  {}    {} columns", tier1, count);
 
         if let Some(group) = tier1_groups.get(tier1) {
             let all_examples: Vec<String> = group
