@@ -261,6 +261,8 @@ AI asks to run: tkpsql query --sql "SELECT * FROM users"
 
 For agents that call MCP servers directly, `gate mcp` acts as a transparent stdio proxy registered in the harness as the MCP server. It forwards all JSON-RPC traffic verbatim except for `tools/call` responses, which are passed through Gate 2 before reaching the model. No changes to the upstream MCP server are required.
 
+> **Note:** only `tools/call` responses are redacted — `resources/read`, `prompts/get`, and other MCP message types are forwarded without inspection.
+
 ```
 AI calls MCP server (tools/call)
                         │
