@@ -622,70 +622,47 @@ fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult], verb
         .collect::<std::collections::HashSet<_>>()
         .len();
 
-    println!("\x1b[1mGate PII Scan\x1b[0m");
-    println!("{}", "─".repeat(59));
-    println!();
+    let pii_results: Vec<_> = stats.iter().filter(|r| r.tier1 != "No PII").collect();
 
-    // Summary section
-    println!("\x1b[1mSummary\x1b[0m");
-
-    // Separate PII from "No PII"
-    let (pii_results, no_pii_results): (Vec<_>, Vec<_>) =
-        stats.iter().partition(|r| r.tier1 != "No PII");
-
-    let mut total_pii: usize = 0;
-    let mut total_no_pii: usize = 0;
-
-    for result in &pii_results {
-        total_pii += result.count;
-    }
-    for result in &no_pii_results {
-        total_no_pii += result.count;
-    }
-
-    let pii_percentage = if total_columns > 0 {
+    let total_pii: usize = pii_results.iter().map(|r| r.count).sum();
+    let pii_pct = if total_columns > 0 {
         (total_pii as f64 / total_columns as f64) * 100.0
-    } else {
-        0.0
-    };
-    let no_pii_percentage = if total_columns > 0 {
-        (total_no_pii as f64 / total_columns as f64) * 100.0
     } else {
         0.0
     };
 
     let risk_level = compute_risk_level(&pii_results, total_columns);
-
-    println!("  {:<19} {:>4}", "Tables scanned", unique_tables);
-    println!("  {:<19} {:>4}", "Columns scanned", total_columns);
-    println!();
-    println!(
-        "  {:<19} {:>4} ({:.1}%)",
-        "PII columns", total_pii, pii_percentage
-    );
-    println!(
-        "  {:<19} {:>4} ({:.1}%)",
-        "Non-PII columns", total_no_pii, no_pii_percentage
-    );
-    println!();
-
-    // Add colored risk level
     let risk_color = match risk_level {
-        "CRITICAL" => "\x1b[31m", // Red
-        "HIGH" => "\x1b[33m",     // Yellow
-        "LOW" => "\x1b[32m",      // Green
+        "CRITICAL" => "\x1b[31m",
+        "HIGH" => "\x1b[33m",
+        "LOW" => "\x1b[32m",
         _ => "",
     };
     let reset = "\x1b[0m";
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    println!("\x1b[1mGate PII Scan\x1b[0m");
+    println!("{}", "═".repeat(60));
+    println!();
+
+    // ── Summary ───────────────────────────────────────────────────────────────
+    println!("  {:<19} {:>4}", "Tables scanned", unique_tables);
+    println!("  {:<19} {:>4}", "Columns scanned", total_columns);
+    println!();
+
+    let bar_width = 24usize;
+    let filled = ((pii_pct / 100.0) * bar_width as f64).round() as usize;
+    let filled = filled.min(bar_width);
+    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(bar_width - filled));
     println!(
-        "  {:<18} {}{}{}",
-        "Risk level", risk_color, risk_level, reset
+        "  PII exposure:  {}  {:.1}%   Risk: {}{}{}",
+        bar, pii_pct, risk_color, risk_level, reset
     );
     println!();
 
-    // Detected categories section
-    println!("\x1b[1mDetected Categories\x1b[0m");
-    println!("{}", "─".repeat(59));
+    // ── Detected Categories table ─────────────────────────────────────────────
+    let sep = "─".repeat(68);
+    let cat_w = 24usize;
 
     // Group PII results by tier1 category
     let mut tier1_groups: BTreeMap<&'static str, Vec<&TieredCategoryResult>> = BTreeMap::new();
@@ -693,7 +670,6 @@ fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult], verb
         tier1_groups.entry(result.tier1).or_default().push(result);
     }
 
-    // Collect tier1 categories with their totals, sorted by count descending
     let mut tier1_totals: Vec<(&'static str, usize)> = Vec::new();
     for tier1_cat in TIER1_CATEGORIES_ORDERED {
         if let Some(group) = tier1_groups.get(tier1_cat) {
@@ -712,76 +688,74 @@ fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult], verb
             tier1_totals.push(("Other", count));
         }
     }
-    tier1_totals.sort_by_key(|b| std::cmp::Reverse(b.1)); // Sort descending by count
+    tier1_totals.sort_by_key(|b| std::cmp::Reverse(b.1));
 
-    // Find the longest category name for alignment
-    let max_category_len = TIER1_CATEGORIES_ORDERED
-        .iter()
-        .map(|s| s.len())
-        .max()
-        .unwrap_or(20);
-
-    // Print detected categories
+    println!("\x1b[1mDetected Categories\x1b[0m");
+    println!("{}", sep);
+    println!(
+        "  {:<cat_w$}  {:>7}   {:>6}  Sensitivity",
+        "Category", "Columns", "Share"
+    );
+    println!("{}", sep);
     for (tier1, count) in &tier1_totals {
-        let pii_percentage = ((*count as f64) / (total_pii as f64)) * 100.0;
+        let share = if total_pii > 0 {
+            (*count as f64 / total_pii as f64) * 100.0
+        } else {
+            0.0
+        };
+        let sens = sensitivity_label(category_weight(tier1));
         println!(
-            "  {:<width$} {:>5}  {:.1}%",
-            tier1,
-            count,
-            pii_percentage,
-            width = max_category_len
+            "  {:<cat_w$}  {:>7}   {:>5.1}%  {}",
+            tier1, count, share, sens
         );
     }
+    println!("{}", sep);
     println!();
 
-    // Top findings section
+    // ── Top / All Findings ────────────────────────────────────────────────────
     let section_title = if verbose {
         "All Findings"
     } else {
         "Top Findings"
     };
     println!("\x1b[1m{}\x1b[0m", section_title);
-    println!("{}", "─".repeat(59));
+    println!("{}", sep);
 
     let findings_iter: Box<dyn Iterator<Item = _>> = if verbose {
         Box::new(tier1_totals.iter())
     } else {
         Box::new(tier1_totals.iter().take(3))
     };
-    for (idx, (tier1, _)) in findings_iter.enumerate() {
+    for (idx, (tier1, count)) in findings_iter.enumerate() {
         if idx > 0 {
             println!();
         }
-        println!("{}", tier1);
+        let sens = sensitivity_label(category_weight(tier1));
+        println!("  {}    {} columns · {}", tier1, count, sens);
 
         if let Some(group) = tier1_groups.get(tier1) {
-            // Collect all examples across tier2 categories
-            let mut all_examples: Vec<String> = Vec::new();
-            for result in group {
-                all_examples.extend(result.examples.clone());
-            }
+            let all_examples: Vec<String> = group
+                .iter()
+                .flat_map(|r| r.examples.iter().cloned())
+                .collect();
 
             if verbose {
-                // Show all examples in verbose mode
                 for example in &all_examples {
-                    println!("  {}", example);
+                    println!("    {}", example);
                 }
             } else {
-                // Show up to 3 examples and "... and N more" if needed
-                for example in all_examples.iter().take(3) {
-                    println!("  {}", example);
-                }
-
-                // If more than 3 examples, show "... and N more"
+                let preview: Vec<&str> = all_examples.iter().take(3).map(String::as_str).collect();
+                println!("    {}", preview.join(", "));
                 if all_examples.len() > 3 {
-                    let remaining = all_examples.len() - 3;
-                    println!("  ... and {} more", remaining);
+                    println!("    ... and {} more", all_examples.len() - 3);
                 }
             }
         }
     }
+    println!("{}", sep);
     println!();
 
+    // ── Footer ────────────────────────────────────────────────────────────────
     println!("\x1b[1mNote\x1b[0m");
     println!("  Scan detects PII by column name only. Gate 2 also");
     println!("  catches values in text/JSON columns at query time.");
