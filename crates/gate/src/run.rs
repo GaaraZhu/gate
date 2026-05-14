@@ -166,7 +166,10 @@ pub fn run(args: Vec<String>, verbose: bool) {
 /// Gate 1 is skipped (no SQL to parse); only pattern/column-name matching runs.
 fn redact_stdin(verbose: bool, config: &Config) {
     let mut input = String::new();
-    io::stdin().read_to_string(&mut input).unwrap_or_default();
+    if let Err(e) = io::stdin().read_to_string(&mut input) {
+        eprintln!("[gate] error reading stdin: {e}");
+        std::process::exit(1);
+    }
 
     let plan = RedactPlan {
         verbose,
