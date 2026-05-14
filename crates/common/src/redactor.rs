@@ -1151,11 +1151,11 @@ mod tests {
 
     #[test]
     fn non_allowlisted_columns_still_redacted() {
-        let config = cfg_allowlist(&["city"]);
-        let input = json!({"city": "Auckland", "state": "NSW"});
+        let config = cfg_allowlist(&["postcode"]);
+        let input = json!({"postcode": "1010", "street": "123 Main St"});
         let out = redact(input, &plan(), &config);
-        assert_eq!(out["city"], "Auckland");
-        assert_eq!(out["state"], "[PII:address]");
+        assert_eq!(out["postcode"], "1010");
+        assert_eq!(out["street"], "[PII:address]");
     }
 
     #[test]

@@ -162,12 +162,7 @@ const TOKEN_SYNONYMS: &[(&str, &str)] = &[
     ("addr", "address"),
     ("street", "address"),
     ("postcode", "address"),
-    ("suburb", "address"),
     ("zip", "address"),
-    ("city", "address"),
-    ("state", "address"),
-    ("province", "address"),
-    ("country", "address"),
     ("latitude", "gps"),
     ("longitude", "gps"),
     ("gps", "gps"),
@@ -873,11 +868,11 @@ mod tests {
         assert_eq!(classify_column("addr"), Some("address"));
         assert_eq!(classify_column("postcode"), Some("address"));
         assert_eq!(classify_column("zip_code"), Some("address"));
-        assert_eq!(classify_column("suburb"), Some("address"));
-        assert_eq!(classify_column("city"), Some("address"));
-        assert_eq!(classify_column("state"), Some("address"));
-        assert_eq!(classify_column("province"), Some("address"));
-        assert_eq!(classify_column("country"), Some("address"));
+        assert_eq!(classify_column("suburb"), None);
+        assert_eq!(classify_column("city"), None);
+        assert_eq!(classify_column("state"), None);
+        assert_eq!(classify_column("province"), None);
+        assert_eq!(classify_column("country"), None);
         assert_eq!(classify_column("latitude"), Some("gps"));
         assert_eq!(classify_column("longitude"), Some("gps"));
         assert_eq!(classify_column("gps"), Some("gps"));

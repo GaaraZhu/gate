@@ -1320,7 +1320,7 @@ mod tests {
 
     #[test]
     fn json_report_sensitivity_labels_are_correct() {
-        let v = run_json_report(&[("t", "ssn"), ("t", "email"), ("t", "city")]);
+        let v = run_json_report(&[("t", "ssn"), ("t", "email"), ("t", "street")]);
         let cats = v["categories"].as_array().unwrap();
         let gov = cats.iter().find(|c| c["name"] == "Government IDs");
         let contact = cats.iter().find(|c| c["name"] == "Contact");
