@@ -757,69 +757,68 @@ fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult], verb
     }
     tier1_totals.sort_by_key(|b| std::cmp::Reverse(b.1));
 
-    println!("{hdr}Detected Categories{reset}");
-    println!("{}", sep);
-    println!(
-        "  {:<cat_w$}  {:>7}   {:>6}  Sensitivity",
-        "Category", "Columns", "Share"
-    );
-    println!("{}", sep);
-    for (tier1, count) in &tier1_totals {
-        let share = if total_pii > 0 {
-            (*count as f64 / total_pii as f64) * 100.0
-        } else {
-            0.0
-        };
-        let sens = sensitivity_label(category_weight(tier1));
+    if total_pii > 0 {
+        println!("{hdr}Detected Categories{reset}");
+        println!("{}", sep);
         println!(
-            "  {:<cat_w$}  {:>7}   {:>5.1}%  {}",
-            tier1, count, share, sens
+            "  {:<cat_w$}  {:>7}   {:>6}  Sensitivity",
+            "Category", "Columns", "Share"
         );
-    }
-    println!("{}", sep);
-    println!();
-
-    // ── Top / All Findings ────────────────────────────────────────────────────
-    let section_title = if verbose {
-        "All Findings"
-    } else {
-        "Top Findings"
-    };
-    println!("{hdr}{section_title}{reset}");
-    println!("{}", sep);
-
-    let findings_iter: Box<dyn Iterator<Item = _>> = if verbose {
-        Box::new(tier1_totals.iter())
-    } else {
-        Box::new(tier1_totals.iter().take(3))
-    };
-    for (idx, (tier1, count)) in findings_iter.enumerate() {
-        if idx > 0 {
-            println!();
+        println!("{}", sep);
+        for (tier1, count) in &tier1_totals {
+            let share = (*count as f64 / total_pii as f64) * 100.0;
+            let sens = sensitivity_label(category_weight(tier1));
+            println!(
+                "  {:<cat_w$}  {:>7}   {:>5.1}%  {}",
+                tier1, count, share, sens
+            );
         }
-        println!("  {}    {} column(s)", tier1, count);
+        println!("{}", sep);
+        println!();
 
-        if let Some(group) = tier1_groups.get(tier1) {
-            let all_examples: Vec<String> = group
-                .iter()
-                .flat_map(|r| r.examples.iter().cloned())
-                .collect();
+        // ── Top / All Findings ────────────────────────────────────────────────
+        let section_title = if verbose {
+            "All Findings"
+        } else {
+            "Top Findings"
+        };
+        println!("{hdr}{section_title}{reset}");
+        println!("{}", sep);
 
-            if verbose {
-                for example in &all_examples {
-                    println!("    {}", example);
-                }
-            } else {
-                let preview: Vec<&str> = all_examples.iter().take(3).map(String::as_str).collect();
-                println!("    {}", preview.join(", "));
-                if all_examples.len() > 3 {
-                    println!("    ... and {} more", all_examples.len() - 3);
+        let findings_iter: Box<dyn Iterator<Item = _>> = if verbose {
+            Box::new(tier1_totals.iter())
+        } else {
+            Box::new(tier1_totals.iter().take(3))
+        };
+        for (idx, (tier1, count)) in findings_iter.enumerate() {
+            if idx > 0 {
+                println!();
+            }
+            println!("  {}    {} column(s)", tier1, count);
+
+            if let Some(group) = tier1_groups.get(tier1) {
+                let all_examples: Vec<String> = group
+                    .iter()
+                    .flat_map(|r| r.examples.iter().cloned())
+                    .collect();
+
+                if verbose {
+                    for example in &all_examples {
+                        println!("    {}", example);
+                    }
+                } else {
+                    let preview: Vec<&str> =
+                        all_examples.iter().take(3).map(String::as_str).collect();
+                    println!("    {}", preview.join(", "));
+                    if all_examples.len() > 3 {
+                        println!("    ... and {} more", all_examples.len() - 3);
+                    }
                 }
             }
         }
+        println!("{}", sep);
+        println!();
     }
-    println!("{}", sep);
-    println!();
 
     // ── Footer ────────────────────────────────────────────────────────────────
     println!("{hdr}Note{reset}");
