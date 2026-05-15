@@ -20,10 +20,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}
-      - run: cargo fmt --check
+      - run: "$CARGO_HOME/bin/cargo fmt --check"
         if: matrix.os == 'ubuntu-latest'
-      - run: cargo clippy -- -D warnings
-      - run: cargo test --all
+        shell: bash
+      - run: "$CARGO_HOME/bin/cargo clippy -- -D warnings"
+        shell: bash
+      - run: "$CARGO_HOME/bin/cargo test --all"
+        shell: bash
       - uses: rustsec/audit-check@v1
         if: matrix.os == 'ubuntu-latest'
         with:
