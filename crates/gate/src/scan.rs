@@ -548,10 +548,11 @@ fn category_weight(tier1: &str) -> u8 {
 /// HIGH:     max_tier==3 (any critical-sensitivity column present)
 ///           max_tier==2 AND pii_ratio > 0.05
 ///           max_tier==1 AND pii_ratio > 0.25
-/// LOW:      everything else
+/// LOW:      everything else with some PII present
+/// NONE:     no PII columns detected
 fn compute_risk_level(pii_results: &[&TieredCategoryResult], total_columns: usize) -> &'static str {
     if total_columns == 0 || pii_results.is_empty() {
-        return "LOW";
+        return "NONE";
     }
 
     let total_pii: usize = pii_results.iter().map(|r| r.count).sum();
@@ -602,7 +603,7 @@ fn sensitivity_label(weight: u8) -> &'static str {
 
 fn empty_json_report() -> String {
     serde_json::to_string_pretty(&serde_json::json!({
-        "risk_level": "LOW",
+        "risk_level": "NONE",
         "tables_scanned": 0,
         "columns_scanned": 0,
         "pii_columns": 0,
@@ -701,7 +702,7 @@ fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult], verb
     let risk_color = match risk_level {
         "CRITICAL" => "\x1b[31m",
         "HIGH" => "\x1b[33m",
-        "LOW" => "\x1b[32m",
+        "LOW" | "NONE" => "\x1b[32m",
         _ => "",
     };
     let reset = "\x1b[0m";
@@ -1379,9 +1380,9 @@ mod tests {
     }
 
     #[test]
-    fn risk_no_pii_is_low() {
-        assert_eq!(compute_risk_level(&[], 100), "LOW");
-        assert_eq!(compute_risk_level(&[], 0), "LOW");
+    fn risk_no_pii_is_none() {
+        assert_eq!(compute_risk_level(&[], 100), "NONE");
+        assert_eq!(compute_risk_level(&[], 0), "NONE");
     }
 
     #[test]
@@ -1497,7 +1498,7 @@ mod tests {
     #[test]
     fn json_report_empty_input_is_valid() {
         let v: serde_json::Value = serde_json::from_str(&empty_json_report()).unwrap();
-        assert_eq!(v["risk_level"], "LOW");
+        assert_eq!(v["risk_level"], "NONE");
         assert_eq!(v["columns_scanned"], 0);
         assert_eq!(v["categories"].as_array().unwrap().len(), 0);
     }
