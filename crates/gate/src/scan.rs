@@ -710,7 +710,7 @@ fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult], verb
 
     // ── Header ────────────────────────────────────────────────────────────────
     println!("{hdr}Gate PII Scan{reset}");
-    println!("{}", "═".repeat(60));
+    println!("{}", "═".repeat(66));
     println!();
 
     // ── Summary ───────────────────────────────────────────────────────────────
@@ -723,14 +723,14 @@ fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult], verb
     let filled = filled.min(bar_width);
     let bar = format!("{}{}", "█".repeat(filled), "░".repeat(bar_width - filled));
     println!(
-        "  PII exposure:  {}  {:.1}%   Risk: {}{}{}",
+        "  PII exposure:  {}  {:.1}%  Risk: {}{}{}",
         bar, pii_pct, risk_color, risk_level, reset
     );
     println!();
 
     // ── Detected Categories table ─────────────────────────────────────────────
-    let sep = "─".repeat(68);
     let cat_w = 24usize;
+    let sep = "─".repeat(66);
 
     // Group PII results by tier1 category
     let mut tier1_groups: BTreeMap<&'static str, Vec<&TieredCategoryResult>> = BTreeMap::new();
@@ -762,7 +762,7 @@ fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult], verb
         println!("{hdr}Detected Categories{reset}");
         println!("{}", sep);
         println!(
-            "  {:<cat_w$}  {:>7}   {:>6}  Sensitivity",
+            "  {:<cat_w$}     {:>7}     {:>6}     Sensitivity",
             "Category", "Columns", "Share"
         );
         println!("{}", sep);
@@ -770,7 +770,7 @@ fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult], verb
             let share = (*count as f64 / total_pii as f64) * 100.0;
             let sens = sensitivity_label(category_weight(tier1));
             println!(
-                "  {:<cat_w$}  {:>7}   {:>5.1}%  {}",
+                "  {:<cat_w$}     {:>7}     {:>5.1}%     {}",
                 tier1, count, share, sens
             );
         }
@@ -795,7 +795,7 @@ fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult], verb
             if idx > 0 {
                 println!();
             }
-            println!("  {}    {} column(s)", tier1, count);
+            println!("  {:<cat_w$}     {:>7} column(s)", tier1, count);
 
             if let Some(group) = tier1_groups.get(tier1) {
                 let all_examples: Vec<String> = group
