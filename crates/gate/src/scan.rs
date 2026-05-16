@@ -762,16 +762,17 @@ fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult], verb
         println!("{hdr}Detected Categories{reset}");
         println!("{}", sep);
         println!(
-            "  {:<cat_w$}     {:>7}     {:>6}     Sensitivity",
+            "  {:<cat_w$}     {:<7}     {:<6}     Sensitivity",
             "Category", "Columns", "Share"
         );
         println!("{}", sep);
         for (tier1, count) in &tier1_totals {
             let share = (*count as f64 / total_pii as f64) * 100.0;
             let sens = sensitivity_label(category_weight(tier1));
+            let share_str = format!("{:.1}%", share);
             println!(
-                "  {:<cat_w$}     {:>7}     {:>5.1}%     {}",
-                tier1, count, share, sens
+                "  {:<cat_w$}     {:<7}     {:<6}     {}",
+                tier1, count, share_str, sens
             );
         }
         println!("{}", sep);
