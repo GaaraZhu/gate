@@ -1,19 +1,46 @@
--- Demo database for gate end-to-end testing.
--- All data is synthetic — emails and card numbers are fake.
+-- Gate demo seed data
+-- Run: psql -U gate -d gatepay -f dev/seed.sql
+
+DROP TABLE IF EXISTS transactions;
+DROP TABLE IF EXISTS users;
 
 CREATE TABLE users (
-    id               SERIAL PRIMARY KEY,
-    full_name        TEXT NOT NULL,      -- PII
-    email            TEXT NOT NULL,      -- PII
-    status           TEXT NOT NULL DEFAULT 'active',
-    created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_login_at    TIMESTAMP
+  id            SERIAL PRIMARY KEY,
+  full_name     TEXT,           -- PII: redacted by gate
+  email         TEXT,           -- PII: redacted by gate
+  phone_number  TEXT,           -- PII: redacted by gate
+  ird_number    TEXT,           -- PII: redacted by gate
+  country       TEXT,
+  created_at    TIMESTAMP DEFAULT NOW()
 );
 
--- Synthetic user data for gate end-to-end testing.
-INSERT INTO users (full_name, email, status, created_at, last_login_at) VALUES
-  ('Alice Johnson',   'alice.johnson@example.com',   'active',   '2023-01-15 10:30:00', '2024-05-06 14:22:00'),
-  ('Bob Williams',    'bob.williams@example.com',    'active',   '2023-02-20 14:45:00', '2024-05-05 09:15:00'),
-  ('Carol Martinez',  'carol.martinez@example.com',  'active',   '2023-03-10 09:15:00', '2024-05-04 16:30:00'),
-  ('David Chen',      'david.chen@example.com',      'inactive', '2023-04-05 16:20:00', '2024-04-15 11:00:00'),
-  ('Eve Okonkwo',     'eve.okonkwo@example.com',     'active',   '2023-05-12 11:00:00', '2024-05-06 13:45:00');
+CREATE TABLE transactions (
+  id           SERIAL PRIMARY KEY,
+  user_id      INT,             -- FK to users.id, not PII
+  amount       NUMERIC(10,2),
+  card_number  TEXT,            -- PII: redacted by gate
+  merchant     TEXT,
+  category     TEXT,
+  status       TEXT,
+  created_at   TIMESTAMP DEFAULT NOW()
+);
+
+INSERT INTO users (id, full_name, email, phone_number, ird_number, country) VALUES
+  (1, 'Alice Johnson',  'alice@example.com',   '555-867-5309', '049-091-850', 'NZ'),
+  (2, 'Bob Smith',      'bob@example.com',     '555-123-4567', '136-410-132', 'NZ'),
+  (3, 'Carol Martinez', 'carol@example.com',   '555-234-5678', '085-766-988', 'AU'),
+  (4, 'David Lee',      'david@example.com',   '555-345-6789', '103-254-869', 'AU');
+
+INSERT INTO transactions (id, user_id, amount, card_number, merchant, category, status) VALUES
+  (1,  1,  49.99, '4111111111111111', 'Spotify',        'Subscription', 'completed'),
+  (2,  1, 120.00, '4111111111111111', 'Amazon',         'Shopping',     'completed'),
+  (3,  1,  15.50, '4111111111111111', 'Uber Eats',      'Food',         'completed'),
+  (4,  2,  89.00, '5500005555555559', 'Netflix',        'Subscription', 'completed'),
+  (5,  2, 340.00, '5500005555555559', 'Apple Store',    'Electronics',  'completed'),
+  (6,  2,  22.80, '5500005555555559', 'Uber Eats',      'Food',         'refunded'),
+  (7,  3, 220.50, '340000000000009',  'JB Hi-Fi',       'Electronics',  'completed'),
+  (8,  3,  60.00, '340000000000009',  'Woolworths',     'Groceries',    'completed'),
+  (9,  3,  12.99, '340000000000009',  'Spotify',        'Subscription', 'completed'),
+  (10, 4,  45.00, '6011000990139424', 'Countdown',      'Groceries',    'completed'),
+  (11, 4, 199.00, '6011000990139424', 'PB Tech',        'Electronics',  'pending'),
+  (12, 4,  33.40, '6011000990139424', 'McDonald''s',    'Food',         'completed');

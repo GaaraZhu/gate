@@ -30,3 +30,6 @@ __pycache__/
 
 # Test schema
 dev/scan_test_schema.json
+
+# demo
+dev/demo/

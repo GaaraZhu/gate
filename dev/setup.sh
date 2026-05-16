@@ -38,7 +38,7 @@ echo "==> Starting PostgreSQL..."
 
 echo -n "==> Waiting for PostgreSQL to be ready"
 until (cd "$DEV" && $DC exec -T postgres \
-    pg_isready -U gate -d gate_demo) >/dev/null 2>&1; do
+    pg_isready -U gate -d gatepay) >/dev/null 2>&1; do
   printf '.'
   sleep 1
 done
