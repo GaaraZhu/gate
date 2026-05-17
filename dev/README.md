@@ -73,7 +73,7 @@ The hook fires transparently. Claude sees:
 
 ## MCP server
 
-`mcp_server.py` exposes the same `gate_demo` database via the Model Context Protocol, so you can test the AI→MCP→Database flow (as opposed to AI→bash→Database).
+`mcp_server.py` exposes the same `gatepay` database via the Model Context Protocol, so you can test the AI→MCP→Database flow (as opposed to AI→bash→Database).
 
 ### Setup
 
@@ -118,7 +118,7 @@ The AI sees raw PII — `full_name` and `email` are unredacted. To protect this 
 ### Override connection settings
 
 ```sh
-PG_HOST=localhost PG_PORT=5432 PG_DB=gate_demo PG_USER=gate PG_PASS=gate \
+PG_HOST=localhost PG_PORT=5432 PG_DB=gatepay PG_USER=gate PG_PASS=gate \
   dev/.venv/bin/python dev/mcp_server.py
 ```
 
