@@ -21,15 +21,13 @@ AI agents increasingly access internal databases and APIs through CLI tools, scr
 
 ## Demo
 
-The agent asks for data in plain English; `gate` intercepts the results and returns all columns with PII fields like `full_name` and `email` masked before they reach the model context. Both integration paths are enforced — the AI cannot bypass them.
+The demo walks through three steps:
 
-**Bash tooling path** — Claude Code running `tkpsql`; `gate hook` rewrites the command and redacts the JSON output.
+1. `gate scan` detecting PII columns across the schema before any query runs
+2. An agent querying the transactions table with gate disabled — `card_number` fully visible
+3. The same queries with gate enabled — `card_number` redacted across both MCP and Bash paths
 
-![gate blocking PII in a Claude Code session using tkpsql](assets/demo-claude-code.jpg)
-
-**MCP path** — GitHub Copilot CLI calling a PostgreSQL MCP server through `gate mcp`; the proxy redacts `tools/call` responses before they reach the model.
-
-![gate blocking PII via MCP in a Copilot CLI session](assets/demo-copilot.jpg)
+![gate intercepting PII before it reaches the model](assets/demo.gif)
 
 Also works with OpenCode — see [How it works](#how-it-works) for all supported harnesses.
 
