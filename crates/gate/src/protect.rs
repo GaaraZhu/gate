@@ -36,7 +36,7 @@ fn protect_unix() {
     use std::os::unix::fs::PermissionsExt;
 
     if !is_root() {
-        exit_with_error("Config is protected. Run: sudo gate protect");
+        exit_with_error("Insufficient permissions. Run: sudo gate protect");
     }
 
     let path = match config_path() {
@@ -78,11 +78,11 @@ fn unprotect_unix() {
     use std::os::unix::fs::PermissionsExt;
 
     if !is_root() {
-        exit_with_error("Config is protected. Run: sudo gate unprotect");
+        exit_with_error("Insufficient permissions. Run: sudo gate unprotect");
     }
 
     let user = std::env::var("SUDO_USER")
-        .unwrap_or_else(|_| exit_with_error("Config is protected. Run: sudo gate unprotect"));
+        .unwrap_or_else(|_| exit_with_error("Insufficient permissions. Run: sudo gate unprotect"));
 
     let path = match config_path() {
         Ok(p) => p,
