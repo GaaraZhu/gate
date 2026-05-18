@@ -79,7 +79,7 @@ fn report_harness_installations() {
 
     // Claude Code
     if let Ok(home) = std::env::var("HOME") {
-        let path = PathBuf::from(&home).join(".claude/settings.json");
+        let path = PathBuf::from(&home).join(".claude").join("settings.json");
         if path.exists() {
             if let Ok(contents) = std::fs::read_to_string(&path) {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) {
@@ -97,7 +97,11 @@ fn report_harness_installations() {
 
     // opencode global
     if let Ok(home) = std::env::var("HOME") {
-        let path = PathBuf::from(&home).join(".config/opencode/plugin/gate.ts");
+        let path = PathBuf::from(&home)
+            .join(".config")
+            .join("opencode")
+            .join("plugin")
+            .join("gate.ts");
         if path.exists() {
             if let Ok(contents) = std::fs::read_to_string(&path) {
                 if crate::init_opencode::has_gate_header(&contents) {
@@ -108,7 +112,7 @@ fn report_harness_installations() {
     }
 
     // opencode project
-    let project_path = PathBuf::from(".opencode/plugin/gate.ts");
+    let project_path = PathBuf::from(".opencode").join("plugin").join("gate.ts");
     if project_path.exists() {
         if let Ok(contents) = std::fs::read_to_string(&project_path) {
             if crate::init_opencode::has_gate_header(&contents) {

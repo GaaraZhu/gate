@@ -205,9 +205,13 @@ pub fn config_path() -> Result<std::path::PathBuf> {
     if let Ok(path) = std::env::var("GATE_CONFIG") {
         return Ok(std::path::PathBuf::from(path));
     }
-    let home =
-        std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME environment variable not set"))?;
-    Ok(std::path::PathBuf::from(home).join(".config/gate/config.yaml"))
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| anyhow::anyhow!("cannot resolve home directory: set HOME or USERPROFILE"))?;
+    Ok(std::path::PathBuf::from(home)
+        .join(".config")
+        .join("gate")
+        .join("config.yaml"))
 }
 
 #[cfg(test)]

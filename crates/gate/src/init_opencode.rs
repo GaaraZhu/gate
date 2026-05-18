@@ -58,10 +58,17 @@ pub(crate) fn plugin_path(scope: &str) -> Result<PathBuf, String> {
     match scope {
         "global" => {
             let home = std::env::var("HOME")
-                .map_err(|_| "HOME environment variable not set".to_string())?;
-            Ok(PathBuf::from(home).join(".config/opencode/plugin/gate.ts"))
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .map_err(|_| {
+                    "cannot resolve home directory: set HOME or USERPROFILE".to_string()
+                })?;
+            Ok(PathBuf::from(home)
+                .join(".config")
+                .join("opencode")
+                .join("plugin")
+                .join("gate.ts"))
         }
-        "project" => Ok(PathBuf::from(".opencode/plugin/gate.ts")),
+        "project" => Ok(PathBuf::from(".opencode").join("plugin").join("gate.ts")),
         _ => Err(format!(
             "unsupported scope '{}'; use 'global' or 'project'",
             scope

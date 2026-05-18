@@ -836,9 +836,11 @@ fn print_report(pairs: &[(String, String)], stats: &[TieredCategoryResult], verb
 
 /// Interactive false-positive triage: two single-line prompts — one to add, one to remove.
 fn run_review() {
-    // Open /dev/tty directly so prompts work even when stdin is a pipe
+    // Open the console input device directly so prompts work even when stdin is a pipe
     // (e.g. `psql ... | gate scan --review`). Falls back gracefully if no TTY is available.
-    let tty = match std::fs::OpenOptions::new().read(true).open("/dev/tty") {
+    // Unix: /dev/tty  Windows: CONIN$ (both bypass stdin redirection)
+    let tty_path = if cfg!(windows) { "CONIN$" } else { "/dev/tty" };
+    let tty = match std::fs::OpenOptions::new().read(true).open(tty_path) {
         Ok(f) => f,
         Err(_) => {
             eprintln!("note: --review requires an interactive terminal");

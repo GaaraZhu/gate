@@ -125,7 +125,7 @@ fn plan_remove_plugin(scope: &str) -> Option<Action> {
 
 fn plan_remove_copilot_hook() -> Option<Action> {
     let root = find_git_root()?;
-    let path = root.join(".github/hooks/PreToolUse.json");
+    let path = root.join(".github").join("hooks").join("PreToolUse.json");
     if !path.exists() {
         return None;
     }

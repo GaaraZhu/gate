@@ -305,11 +305,12 @@ fn normalize_mcp_servers(settings: &mut Value) {
 /// "project" → ./.claude/settings.json; anything else ("user", "global") → ~/.claude/settings.json.
 pub(crate) fn claude_settings_path(scope: &str) -> Result<PathBuf, String> {
     if scope == "project" {
-        return Ok(PathBuf::from(".claude/settings.json"));
+        return Ok(PathBuf::from(".claude").join("settings.json"));
     }
-    let home =
-        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
-    Ok(PathBuf::from(home).join(".claude/settings.json"))
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "cannot resolve home directory: set HOME or USERPROFILE".to_string())?;
+    Ok(PathBuf::from(home).join(".claude").join("settings.json"))
 }
 
 /// Resolve the Claude Code MCP config path for the given scope.
@@ -318,8 +319,9 @@ fn claude_code_mcp_path(scope: &str) -> Result<PathBuf, String> {
     if scope == "project" {
         return Ok(PathBuf::from(".mcp.json"));
     }
-    let home =
-        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "cannot resolve home directory: set HOME or USERPROFILE".to_string())?;
     Ok(PathBuf::from(home).join(".claude.json"))
 }
 
@@ -330,9 +332,10 @@ fn copilot_mcp_path(scope: &str) -> Result<PathBuf, String> {
     if scope == "project" {
         return Ok(PathBuf::from(".mcp.json"));
     }
-    let home =
-        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
-    Ok(PathBuf::from(home).join(".copilot/mcp-config.json"))
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "cannot resolve home directory: set HOME or USERPROFILE".to_string())?;
+    Ok(PathBuf::from(home).join(".copilot").join("mcp-config.json"))
 }
 
 /// Resolve the opencode config path for the given scope.
@@ -341,9 +344,13 @@ fn opencode_config_path(scope: &str) -> Result<PathBuf, String> {
     if scope == "project" {
         return Ok(PathBuf::from("opencode.json"));
     }
-    let home =
-        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
-    Ok(PathBuf::from(home).join(".config/opencode/opencode.json"))
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "cannot resolve home directory: set HOME or USERPROFILE".to_string())?;
+    Ok(PathBuf::from(home)
+        .join(".config")
+        .join("opencode")
+        .join("opencode.json"))
 }
 
 fn register_mcp_server_opencode(path: &Path, server_name: &str, cmd_str: &str) {
@@ -635,7 +642,10 @@ fn init_copilot_cli() {
             "not inside a git repository; gate init --harness copilot-cli requires a git repository",
         ),
     };
-    let path = repo_root.join(".github/hooks/PreToolUse.json");
+    let path = repo_root
+        .join(".github")
+        .join("hooks")
+        .join("PreToolUse.json");
     run_copilot_with_path(&path);
 }
 

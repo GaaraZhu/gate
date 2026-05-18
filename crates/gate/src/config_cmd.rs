@@ -71,7 +71,13 @@ fn resolve_editor() -> String {
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("EDITOR").ok().filter(|s| !s.is_empty()))
-        .unwrap_or_else(|| "vi".to_string())
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                "notepad".to_string()
+            } else {
+                "vi".to_string()
+            }
+        })
 }
 
 #[cfg(test)]
@@ -162,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_editor_falls_back_to_vi() {
+    fn resolve_editor_falls_back_to_platform_default() {
         let _guard = ENV_LOCK.lock().unwrap();
         let saved_visual = std::env::var("VISUAL").ok();
         let saved_editor = std::env::var("EDITOR").ok();
@@ -181,6 +187,9 @@ mod tests {
                 None => std::env::remove_var("EDITOR"),
             }
         }
+        #[cfg(windows)]
+        assert_eq!(result, "notepad");
+        #[cfg(not(windows))]
         assert_eq!(result, "vi");
     }
 
