@@ -202,10 +202,10 @@ The ones you'll use most:
 | `gate init` | Register the hook with your harness (see Quickstart) |
 | `gate config` | Create and edit the YAML config |
 | `gate scan` | PII risk report across your schema |
-| `gate enable` / `gate disable` | Toggle redaction without uninstalling |
 | `gate allowlist add/remove/list` | Manage column-name false positives |
-| `gate validate` | Check config for errors before the first session |
 | `gate retro` | Protection retrospective — how many queries protected, how many PII fields redacted, by type |
+| `gate enable` / `gate disable` | Toggle redaction without uninstalling |
+| `gate validate` | Check config for errors before the first session |
 | `gate protect` / `gate unprotect` *(Unix only)* | Transfer config ownership to root |
 | `gate uninstall` | Remove everything gate added to your system |
 

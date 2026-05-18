@@ -29,22 +29,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// PreToolUse hook: rewrite matching Bash commands to route through gate run
-    Hook {
-        /// Output format: claude-code (default) or copilot
-        #[arg(long, default_value = "claude-code")]
-        format: String,
-    },
-    #[command(
-        about = "Execute a tool with Gate 1 + Gate 2 PII redaction on its JSON output.\nWith no args, reads JSON from stdin and applies Gate 2 directly"
-    )]
-    Run {
-        /// Print per-field redaction decisions to stderr for debugging
-        #[arg(long)]
-        verbose: bool,
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
+    // ── Setup ────────────────────────────────────────────────────────────────
     #[command(
         about = "Register the PreToolUse hook in the agent harness settings.\nWith --mcp, registers a gate mcp proxy entry for an MCP server instead"
     )]
@@ -83,8 +68,7 @@ enum Commands {
         #[arg(long = "init-only")]
         init_only: bool,
     },
-    /// List configured tools and their sql_arg values
-    List,
+    // ── Daily use ────────────────────────────────────────────────────────────
     #[command(
         about = "Read columnar JSON from stdin and report PII-exposed column names.\nPipe the output of a schema query (SELECT TABLE_NAME, COLUMN_NAME ...) into this command.\nExample: tkdbr query --sql \"SELECT TABLE_NAME, COLUMN_NAME FROM ...\" | gate scan"
     )]
@@ -107,6 +91,35 @@ enum Commands {
         action: AllowlistAction,
     },
     #[command(
+        about = "Show a protection retrospective: how many queries gate protected and how many PII fields it redacted (also known as stats/audit/report)"
+    )]
+    Retro,
+    /// Enable PII redaction (sets enabled: true in config)
+    Enable,
+    /// Disable PII redaction (sets enabled: false in config)
+    Disable,
+    /// Load config, compile patterns, and report errors or warnings
+    Validate,
+    /// List configured tools and their sql_arg values
+    List,
+    // ── Plumbing (called by harness) ─────────────────────────────────────────
+    #[command(
+        about = "Execute a tool with Gate 1 + Gate 2 PII redaction on its JSON output.\nWith no args, reads JSON from stdin and applies Gate 2 directly"
+    )]
+    Run {
+        /// Print per-field redaction decisions to stderr for debugging
+        #[arg(long)]
+        verbose: bool,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// PreToolUse hook: rewrite matching Bash commands to route through gate run
+    Hook {
+        /// Output format: claude-code (default) or copilot
+        #[arg(long, default_value = "claude-code")]
+        format: String,
+    },
+    #[command(
         about = "Run a stdio MCP proxy: intercepts tools/call responses and redacts PII.\nUsage: gate mcp [--name <server>] [--] <upstream-cmd> [args...]\nExample: gate mcp --name postgres -- uvx mcp-server-postgres"
     )]
     Mcp {
@@ -117,12 +130,7 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         upstream: Vec<String>,
     },
-    /// Load config, compile patterns, and report errors or warnings
-    Validate,
-    /// Enable PII redaction (sets enabled: true in config)
-    Enable,
-    /// Disable PII redaction (sets enabled: false in config)
-    Disable,
+    // ── Advanced / rare ──────────────────────────────────────────────────────
     #[command(
         about = "Protect the config file by transferring ownership to root (Unix only).\nAfter this, all config changes require sudo. Run as: sudo gate protect"
     )]
@@ -133,10 +141,6 @@ enum Commands {
     Unprotect,
     /// Remove the hook, config directory, and any gate-generated opencode plugins
     Uninstall,
-    #[command(
-        about = "Show a protection retrospective: how many queries gate protected and how many PII fields it redacted (also known as stats/audit/report)"
-    )]
-    Retro,
     /// Print version
     Version,
 }
@@ -162,8 +166,6 @@ enum AllowlistAction {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Hook { format } => hook::run(&format),
-        Commands::Run { verbose, args } => run::run(args, verbose),
         Commands::Init {
             harness,
             scope,
@@ -186,7 +188,6 @@ fn main() {
             print,
             init_only,
         } => config_cmd::run(path, print, init_only),
-        Commands::List => list::run(),
         Commands::Scan {
             verbose,
             json,
@@ -199,6 +200,13 @@ fn main() {
             }
             AllowlistAction::List => allowlist::run(allowlist::Action::List),
         },
+        Commands::Retro => retro::run(),
+        Commands::Enable => enable_disable::run(true),
+        Commands::Disable => enable_disable::run(false),
+        Commands::Validate => validate::run(),
+        Commands::List => list::run(),
+        Commands::Run { verbose, args } => run::run(args, verbose),
+        Commands::Hook { format } => hook::run(&format),
         Commands::Mcp { name, upstream } => {
             // Strip a leading "--" separator if clap passed it through
             let upstream = if upstream.first().map(String::as_str) == Some("--") {
@@ -208,13 +216,9 @@ fn main() {
             };
             mcp::run(name, upstream)
         }
-        Commands::Validate => validate::run(),
-        Commands::Enable => enable_disable::run(true),
-        Commands::Disable => enable_disable::run(false),
         Commands::Protect => protect::protect(),
         Commands::Unprotect => protect::unprotect(),
         Commands::Uninstall => uninstall::run(),
-        Commands::Retro => retro::run(),
         Commands::Version => println!("{}", env!("CARGO_PKG_VERSION")),
     }
 }
