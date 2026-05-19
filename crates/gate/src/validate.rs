@@ -76,6 +76,7 @@ pub fn run() {
 
 fn report_harness_installations() {
     let mut found: Vec<String> = Vec::new();
+    let in_git_repo = crate::init::find_git_root().is_some();
 
     // Claude Code
     if let Ok(home) = std::env::var("HOME") {
@@ -121,19 +122,21 @@ fn report_harness_installations() {
         }
     }
 
-    // Copilot CLI
-    let copilot_path = PathBuf::from(".github")
-        .join("hooks")
-        .join("PreToolUse.json");
-    if copilot_path.exists() {
-        if let Ok(contents) = std::fs::read_to_string(&copilot_path) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) {
-                if v["hooks"]["PreToolUse"]
-                    .as_array()
-                    .map(|arr| arr.iter().any(crate::init::copilot_entry_has_gate_hook))
-                    .unwrap_or(false)
-                {
-                    found.push(format!("Copilot CLI ({})", copilot_path.display()));
+    // Copilot CLI (project-level only)
+    if in_git_repo {
+        let copilot_path = PathBuf::from(".github")
+            .join("hooks")
+            .join("PreToolUse.json");
+        if copilot_path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&copilot_path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    if v["hooks"]["PreToolUse"]
+                        .as_array()
+                        .map(|arr| arr.iter().any(crate::init::copilot_entry_has_gate_hook))
+                        .unwrap_or(false)
+                    {
+                        found.push(format!("Copilot CLI ({})", copilot_path.display()));
+                    }
                 }
             }
         }
@@ -147,6 +150,10 @@ fn report_harness_installations() {
         for h in &found {
             println!("  - {h}");
         }
+    }
+
+    if !in_git_repo {
+        println!("\nNote: Project-level integrations (Copilot CLI) can only be detected from within a git repository.");
     }
 }
 
