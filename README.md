@@ -160,6 +160,14 @@ Redacted output preserves the original JSON structure. PII values are replaced w
 
 With `hash_values: true` in config, each placeholder gains an 8-char hex suffix derived from the original value (`[PII:email:7f83b165]`). The same raw value always produces the same suffix, so the AI can join or deduplicate across rows without ever seeing the underlying data. Error responses from the underlying tool pass through unchanged.
 
+## Protection retrospective
+
+`_gate_summary` reports a single response. `gate retro` aggregates across all of them — total queries seen, PII fields redacted, hit rate, plus a breakdown by tool and PII category. Useful for periodic audits and for confirming the boundary is doing real work.
+
+![gate retro output](assets/retro.jpg)
+
+Stats are collected by default and written to a local JSONL log on disk — they never leave your machine. Disable with `stats.enabled: false` in config.
+
 ## Security scope
 
 `gate` intercepts the output of configured tools and redacts PII before it reaches the model context. It is not a sandbox — it only applies to commands explicitly listed under `tools:` in config.
