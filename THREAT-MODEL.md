@@ -146,15 +146,16 @@ model.
 
 Gate can be disabled by:
 
-- Setting `GATE_DISABLED=1` in the environment. Any process that can set this env var before the
-  tool runs can bypass gate entirely.
 - Setting `enabled: false` in `~/.config/gate/config.yaml`. Access to this file is equivalent to
-  disabling gate.
+  disabling gate. On Unix, `sudo gate protect` transfers the file to root so the agent cannot
+  modify it from inside the harness.
 - Deleting or corrupting the config file. On config load failure, the hook silently passes through
   (fail-open) to avoid blocking every Bash command. `gate run` exits with an error instead.
+- Editing the harness settings file (e.g. `~/.claude/settings.json`) to remove the `gate hook`
+  entry. `gate protect` does not cover this file; removal takes effect on the next session.
 
 These mechanisms exist for legitimate use (testing, debugging) but mean gate's security guarantee
-is tied to the integrity of the local machine and the agent's environment.
+is tied to the integrity of the local machine and the harness's configuration files.
 
 ---
 

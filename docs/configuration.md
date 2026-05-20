@@ -44,7 +44,7 @@ Add your own columns or patterns in the config schema below.
 ## Config schema
 
 ```yaml
-# Set to false to disable all PII redaction (or use GATE_DISABLED=1 for a session).
+# Set to false to disable all PII redaction.
 enabled: true
 
 # Tools whose Bash invocations are intercepted and piped through `gate run`.

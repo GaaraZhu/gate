@@ -168,16 +168,19 @@ With `hash_values: true` in config, each placeholder gains an 8-char hex suffix 
 
 Stats are collected by default and written to a local JSONL log on disk — they never leave your machine. Disable with `stats.enabled: false` in config.
 
-## Security scope
+## What gate does NOT protect against
 
-`gate` intercepts the output of configured tools and redacts PII before it reaches the model context. It is not a sandbox — it only applies to commands explicitly listed under `tools:` in config.
+`gate` is a deterministic redaction layer, not a sandbox. It assumes the agent is non-adversarial and only inspects output from commands listed under `tools:` in config. The following are deliberately out of scope:
 
-**Covered:** PII in query results returned by configured tools.
-
-**Not covered:**
-- Commands not listed in `tools:` — the AI can invoke them freely
-- Write operations (INSERT, UPDATE, DELETE) — gate does not inspect or block them
-- Credential exposure — gate holds no credentials; that is the responsibility of the underlying tool
+- **Adversarial agents / prompt injection.** Gate's threat model is an agent that *inadvertently* exfiltrates PII. `gate protect` (Unix) blocks the most direct bypass — a hijacked agent disabling gate via config edits — by transferring config ownership to root. But a determined attacker can still route around gate by invoking commands not in `tools:`, requesting non-JSON output formats, piping through encoders, or removing the hook entry from the harness settings file for the next session. Pair gate with a harness-level Bash allowlist to close the residual gap.
+- **Commands not in `tools:`.** The AI can invoke them freely; their output is never inspected.
+- **Non-JSON tool output.** Plain text, CSV, and other formats pass through unchanged. Configure tools to emit JSON.
+- **Encoded or obfuscated PII.** Base64-encoded emails, URL-encoded values, or deliberately spaced strings (`a l i c e @ e x a m p l e . c o m`) are not detected.
+- **Non-US PII by value alone.** The built-in SSN regex requires dashes and the phone pattern is US-centric. Non-US formats rely on column-name matching — extend `pii.column_names` or `pii.patterns` for your region.
+- **PII already in the model's context** from prior turns, system prompts, file reads, or earlier summarisation. Gate filters what goes *into* the model from configured tools; what's already there stays there.
+- **Tool-side network exfiltration.** If a configured tool sends data to an external service directly (rather than returning it via stdout), gate never sees it.
+- **Write operations.** `INSERT`, `UPDATE`, `DELETE` are not inspected or blocked.
+- **Credential exposure.** Gate holds no credentials; that is the responsibility of the underlying tool. Prefer toolkit commands or MCP servers over raw clients that take credentials on the CLI.
 
 For a stronger boundary, combine gate with harness-level tool restrictions and database-level read-only roles. See [THREAT-MODEL.md](THREAT-MODEL.md) for the full attacker model and known bypasses.
 
