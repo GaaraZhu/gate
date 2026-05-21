@@ -41,7 +41,7 @@ Before installing the hook, use `gate scan` to assess how much PII your schema e
 psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'public' ORDER BY TABLE_NAME, ORDINAL_POSITION" | gate scan
 ```
 
-See [docs/scan.md](docs/scan.md) for queries against MySQL, MS SQL Server, Databricks, and toolkit-managed clients.
+See [docs/scan.md](docs/scan.md) for queries against MySQL, MS SQL Server (including native `sqlcmd`), Databricks, and toolkit-managed clients.
 
 Risk level is weighted by category sensitivity — one SSN column matters more than twenty address columns. Exits with code 1 if any PII columns are found (scriptable in CI). Pass `--verbose` to show all detected columns, or `--json` for machine-readable output.
 

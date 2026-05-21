@@ -15,7 +15,32 @@ psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INF
 ## MS SQL Server
 
 ```bash
+# toolkit-managed
 tkmsql query --sql "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS ORDER BY TABLE_NAME, ORDINAL_POSITION" | gate scan
+```
+
+### sqlcmd (native)
+
+`gate scan` understands sqlcmd's default fixed-width table output — no extra flags needed.
+
+**macOS / Linux:**
+```bash
+sqlcmd -S <server> -U <user> -d <dbname> \
+  -Q "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS ORDER BY TABLE_NAME, ORDINAL_POSITION" \
+  | gate scan
+```
+
+**Windows (cmd.exe):**
+
+Interactive password prompts do not work through a pipe on Windows — sqlcmd writes the `Password:` prompt to stdout, which corrupts the pipe output. Avoid the prompt by providing credentials up front:
+
+```cmd
+rem Windows Authentication — no password needed
+sqlcmd -S <server> -E -d <dbname> -Q "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS ORDER BY TABLE_NAME, ORDINAL_POSITION" | gate scan
+
+rem SQL Authentication — set env var before the command (does not appear in command history)
+set SQLCMDPASSWORD=yourpassword
+sqlcmd -S <server> -U <user> -d <dbname> -Q "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS ORDER BY TABLE_NAME, ORDINAL_POSITION" | gate scan
 ```
 
 ## Databricks
