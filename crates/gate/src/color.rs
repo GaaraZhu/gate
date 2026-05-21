@@ -8,7 +8,7 @@ pub fn supports_color() -> bool {
     }
     #[cfg(windows)]
     {
-        return windows_try_enable_ansi();
+        windows_try_enable_ansi()
     }
     #[cfg(not(windows))]
     {
