@@ -125,6 +125,7 @@ const TOKEN_SYNONYMS: &[(&str, &str)] = &[
     ("passport", "passport"),
     ("npi", "npi"),
     ("license", "license"),
+    ("licence", "license"), // AU/NZ/UK spelling
     ("ip", "ip"),
     // ── Salutation ────────────────────────────────────────────────────────────
     ("salutation", "salutation"),
@@ -152,6 +153,9 @@ const TOKEN_SYNONYMS: &[(&str, &str)] = &[
     ("taxnumber", "tax_id"),             // tax_number
     ("taxid", "tax_id"),                 // tax_id
     ("irdnumber", "tax_id"),             // NZ Inland Revenue number
+    ("tfn", "tax_id"),                   // AU Tax File Number (bare abbreviation)
+    ("taxfilenumber", "tax_id"),         // tax_file_number (trigram)
+    ("abn", "tax_id"),                   // AU Business Number (sole traders: personal PII)
     ("visanumber", "visa"),              // visa_number
     ("visaid", "visa"),                  // visa_id
     ("residentnumber", "resident_id"),   // resident_number
@@ -183,6 +187,10 @@ const TOKEN_SYNONYMS: &[(&str, &str)] = &[
     // ── Health & Medical ──────────────────────────────────────────────────────
     ("medical", "medical"),
     ("health", "health"),
+    ("medicare", "health"),       // AU Medicare card
+    ("medicarenumber", "health"), // medicare_number (bigram)
+    ("nhi", "health"),            // NZ National Health Index
+    ("nhinumber", "health"),      // nhi_number (bigram)
     ("diagnosis", "medical"),
     ("prescription", "medical"),
     ("disability", "medical"),
@@ -856,6 +864,31 @@ mod tests {
         assert_eq!(classify_column("resident_number"), Some("resident_id"));
         assert_eq!(classify_column("resident_id"), Some("resident_id"));
         assert_eq!(classify_column("immigration_id"), Some("immigration_id"));
+    }
+
+    #[test]
+    fn classify_au_nz_licence_spelling() {
+        assert_eq!(classify_column("licence"), Some("license"));
+        assert_eq!(classify_column("licence_number"), Some("license"));
+        assert_eq!(classify_column("driver_licence"), Some("license"));
+        assert_eq!(classify_column("drivers_licence"), Some("license"));
+        assert_eq!(classify_column("driverLicence"), Some("license"));
+    }
+
+    #[test]
+    fn classify_au_nz_government_ids() {
+        assert_eq!(classify_column("tfn"), Some("tax_id"));
+        assert_eq!(classify_column("tax_file_number"), Some("tax_id"));
+        assert_eq!(classify_column("abn"), Some("tax_id"));
+    }
+
+    #[test]
+    fn classify_au_nz_health_ids() {
+        assert_eq!(classify_column("medicare"), Some("health"));
+        assert_eq!(classify_column("medicare_number"), Some("health"));
+        assert_eq!(classify_column("medicare_card"), Some("health"));
+        assert_eq!(classify_column("nhi"), Some("health"));
+        assert_eq!(classify_column("nhi_number"), Some("health"));
     }
 
     #[test]
