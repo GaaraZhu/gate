@@ -93,7 +93,7 @@ pub fn run(verbose: bool, json: bool, review: bool) {
 
 /// Parse columnar input to extract (table_name, column_name) pairs.
 ///
-/// Supports three formats:
+/// Supports four formats:
 /// 1. Array-of-arrays (tkdbr / tkmsql): `{"columns": [...], "rows": [[...], ...]}`
 ///    Locates TABLE_NAME and COLUMN_NAME headers (case-insensitive) in the `columns` array,
 ///    then reads the corresponding positions from each row.
@@ -105,6 +105,13 @@ pub fn run(verbose: bool, json: bool, review: bool) {
 ///    ------------+---------------
 ///     users      | id
 ///    (6 rows)
+///    ```
+/// 4. sqlcmd fixed-width table (default `sqlcmd -Q` output):
+///    ```
+///    TABLE_NAME                COLUMN_NAME
+///    ------------------------- -------------------------
+///    users                     email
+///    (1 rows affected)
 ///    ```
 fn parse_columnar_json(input: &str) -> Result<Vec<(String, String)>, String> {
     // Try JSON first
@@ -147,8 +154,16 @@ fn parse_columnar_json(input: &str) -> Result<Vec<(String, String)>, String> {
         return parse_csv(stripped);
     }
 
+    // Fall back to sqlcmd fixed-width table format (dashes separator, space-padded columns)
+    if input.lines().any(|l| {
+        let t = l.trim();
+        !t.is_empty() && t.contains('-') && t.chars().all(|c| c == '-' || c == ' ')
+    }) {
+        return parse_sqlcmd_table(input);
+    }
+
     Err(
-        "input is not valid JSON, psql table format, or CSV — pipe the output of a schema query into gate scan."
+        "input is not valid JSON, psql table format, CSV, or sqlcmd table format — pipe the output of a schema query into gate scan."
             .to_string(),
     )
 }
@@ -209,6 +224,104 @@ fn parse_psql_text_table(text: &str) -> Result<Vec<(String, String)>, String> {
         let cells: Vec<&str> = line.split('|').map(|c| c.trim()).collect();
         let table = cells.get(table_idx).copied().unwrap_or("").to_string();
         let col = cells.get(column_idx).copied().unwrap_or("").to_string();
+        if !table.is_empty() && !col.is_empty() {
+            pairs.push((table, col));
+        }
+    }
+
+    Ok(pairs)
+}
+
+/// Parse sqlcmd fixed-width table output (default format, no `-s` flag needed):
+/// ```text
+/// TABLE_NAME                COLUMN_NAME
+/// ------------------------- -------------------------
+/// users                     email
+/// (2 rows affected)
+/// ```
+/// Column boundaries are derived from the dashes separator line.
+fn parse_sqlcmd_table(text: &str) -> Result<Vec<(String, String)>, String> {
+    let lines: Vec<&str> = text.lines().collect();
+
+    // Find the separator line: all dashes and spaces, with at least one dash, preceded by a header
+    let sep_idx = lines
+        .iter()
+        .enumerate()
+        .find(|(i, l)| {
+            let t = l.trim();
+            *i > 0 && !t.is_empty() && t.contains('-') && t.chars().all(|c| c == '-' || c == ' ')
+        })
+        .map(|(i, _)| i)
+        .ok_or_else(|| "no separator line found in sqlcmd output".to_string())?;
+
+    // Header is the last non-empty line before the separator
+    let header_line = lines[..sep_idx]
+        .iter()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .copied()
+        .ok_or_else(|| "no header line found before sqlcmd separator".to_string())?;
+
+    let sep_line = lines[sep_idx];
+
+    // Derive column byte ranges from groups of dashes in the separator line
+    let mut cols: Vec<(usize, usize)> = Vec::new();
+    let mut col_start: Option<usize> = None;
+    for (pos, ch) in sep_line.char_indices() {
+        match ch {
+            '-' => {
+                col_start.get_or_insert(pos);
+            }
+            ' ' => {
+                if let Some(start) = col_start.take() {
+                    cols.push((start, pos));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(start) = col_start {
+        cols.push((start, sep_line.len()));
+    }
+
+    if cols.len() < 2 {
+        return Err(
+            "sqlcmd output needs at least two columns (TABLE_NAME, COLUMN_NAME)".to_string(),
+        );
+    }
+
+    let extract = |line: &str, start: usize, end: usize| -> String {
+        let start = start.min(line.len());
+        let end = end.min(line.len());
+        line[start..end].trim().to_string()
+    };
+
+    let headers: Vec<String> = cols
+        .iter()
+        .map(|&(s, e)| extract(header_line, s, e).to_lowercase())
+        .collect();
+
+    let table_idx = headers
+        .iter()
+        .position(|h| h == "table_name")
+        .ok_or_else(|| {
+            "table_name column not found — query must SELECT TABLE_NAME, COLUMN_NAME".to_string()
+        })?;
+    let column_idx = headers
+        .iter()
+        .position(|h| h == "column_name")
+        .ok_or_else(|| {
+            "column_name column not found — query must SELECT TABLE_NAME, COLUMN_NAME".to_string()
+        })?;
+
+    let mut pairs = Vec::new();
+    for line in &lines[sep_idx + 1..] {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || (trimmed.starts_with('(') && trimmed.ends_with(')')) {
+            break;
+        }
+        let table = extract(line, cols[table_idx].0, cols[table_idx].1);
+        let col = extract(line, cols[column_idx].0, cols[column_idx].1);
         if !table.is_empty() && !col.is_empty() {
             pairs.push((table, col));
         }
@@ -1519,6 +1632,81 @@ mod tests {
         assert_eq!(v["risk_level"], "NONE");
         assert_eq!(v["columns_scanned"], 0);
         assert_eq!(v["categories"].as_array().unwrap().len(), 0);
+    }
+
+    // ── sqlcmd fixed-width table format ──────────────────────────────────────────
+
+    #[test]
+    fn parse_sqlcmd_basic() {
+        let input = "TABLE_NAME                COLUMN_NAME              \n\
+                     ------------------------- -------------------------\n\
+                     users                     email                    \n\
+                     users                     first_name               \n\
+                     (2 rows affected)\n";
+        let pairs = parse_columnar_json(input).unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], ("users".to_string(), "email".to_string()));
+        assert_eq!(pairs[1], ("users".to_string(), "first_name".to_string()));
+    }
+
+    #[test]
+    fn parse_sqlcmd_trimmed_with_w_flag() {
+        let input = "TABLE_NAME                COLUMN_NAME\n\
+                     ------------------------- -------------------------\n\
+                     users                     email\n\
+                     orders                    customer_id\n\
+                     (2 rows affected)\n";
+        let pairs = parse_columnar_json(input).unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], ("users".to_string(), "email".to_string()));
+        assert_eq!(pairs[1], ("orders".to_string(), "customer_id".to_string()));
+    }
+
+    #[test]
+    fn parse_sqlcmd_columns_reversed() {
+        let input = "COLUMN_NAME               TABLE_NAME\n\
+                     ------------------------- -------------------------\n\
+                     email                     users\n\
+                     (1 rows affected)\n";
+        let pairs = parse_columnar_json(input).unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0], ("users".to_string(), "email".to_string()));
+    }
+
+    #[test]
+    fn parse_sqlcmd_zero_rows() {
+        let input = "TABLE_NAME                COLUMN_NAME\n\
+                     ------------------------- -------------------------\n\
+                     (0 rows affected)\n";
+        let pairs = parse_columnar_json(input).unwrap();
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn parse_sqlcmd_multiple_tables() {
+        let input = "TABLE_NAME                COLUMN_NAME\n\
+                     ------------------------- -------------------------\n\
+                     users                     email\n\
+                     users                     first_name\n\
+                     orders                    customer_id\n\
+                     payments                  card_number\n\
+                     (4 rows affected)\n";
+        let pairs = parse_columnar_json(input).unwrap();
+        assert_eq!(pairs.len(), 4);
+        assert_eq!(pairs[2], ("orders".to_string(), "customer_id".to_string()));
+        assert_eq!(
+            pairs[3],
+            ("payments".to_string(), "card_number".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_sqlcmd_missing_table_name_errors() {
+        let input = "COLUMN_NAME\n\
+                     -------------------------\n\
+                     email\n\
+                     (1 rows affected)\n";
+        assert!(parse_columnar_json(input).is_err());
     }
 
     // ── CSV parsing ───────────────────────────────────────────────────────────
