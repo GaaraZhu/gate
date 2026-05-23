@@ -122,6 +122,40 @@ fn report_harness_installations() {
         }
     }
 
+    // Cursor global
+    if let Ok(home) = std::env::var("HOME") {
+        let path = PathBuf::from(&home).join(".cursor").join("hooks.json");
+        if path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    if v["hooks"]["preToolUse"]
+                        .as_array()
+                        .map(|arr| arr.iter().any(crate::init::cursor_entry_has_gate_hook))
+                        .unwrap_or(false)
+                    {
+                        found.push(format!("Cursor ({})", path.display()));
+                    }
+                }
+            }
+        }
+    }
+
+    // Cursor project
+    let cursor_project_path = PathBuf::from(".cursor").join("hooks.json");
+    if cursor_project_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&cursor_project_path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) {
+                if v["hooks"]["preToolUse"]
+                    .as_array()
+                    .map(|arr| arr.iter().any(crate::init::cursor_entry_has_gate_hook))
+                    .unwrap_or(false)
+                {
+                    found.push("Cursor (.cursor/hooks.json)".to_string());
+                }
+            }
+        }
+    }
+
     // Copilot CLI (project-level only)
     if in_git_repo {
         let copilot_path = PathBuf::from(".github")
@@ -144,7 +178,7 @@ fn report_harness_installations() {
 
     if found.is_empty() {
         println!("No harness integrations detected.");
-        println!("Run `gate init` (Claude Code) or `gate init --harness opencode` to install.");
+        println!("Run `gate init` (Claude Code) or `gate init --harness <opencode|cursor|copilot-cli>` to install.");
     } else {
         println!("Installed harness integrations:");
         for h in &found {
