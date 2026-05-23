@@ -176,6 +176,61 @@ fn report_harness_installations() {
         }
     }
 
+    // ── MCP wrap detections ──────────────────────────────────────────────────
+
+    let home = std::env::var("HOME").ok();
+
+    // Claude Code MCP wrap (global): ~/.claude.json
+    if let Some(ref h) = home {
+        let path = PathBuf::from(h).join(".claude.json");
+        if has_gate_mcp_wrap(&path, "mcpServers") {
+            found.push(format!("Claude Code MCP wrap ({})", path.display()));
+        }
+    }
+
+    // Cursor MCP wrap (global): ~/.cursor/mcp.json
+    if let Some(ref h) = home {
+        let path = PathBuf::from(h).join(".cursor").join("mcp.json");
+        if has_gate_mcp_wrap(&path, "mcpServers") {
+            found.push(format!("Cursor MCP wrap ({})", path.display()));
+        }
+    }
+
+    // Cursor MCP wrap (project): .cursor/mcp.json
+    let cursor_mcp_project = PathBuf::from(".cursor").join("mcp.json");
+    if has_gate_mcp_wrap(&cursor_mcp_project, "mcpServers") {
+        found.push("Cursor MCP wrap (.cursor/mcp.json)".to_string());
+    }
+
+    // Copilot CLI MCP wrap (global): ~/.copilot/mcp-config.json
+    if let Some(ref h) = home {
+        let path = PathBuf::from(h).join(".copilot").join("mcp-config.json");
+        if has_gate_mcp_wrap(&path, "mcpServers") {
+            found.push(format!("Copilot CLI MCP wrap ({})", path.display()));
+        }
+    }
+
+    // Project MCP wrap (shared by Claude Code and Copilot CLI): .mcp.json
+    if has_gate_mcp_wrap(&PathBuf::from(".mcp.json"), "mcpServers") {
+        found.push("MCP wrap (.mcp.json)".to_string());
+    }
+
+    // opencode MCP wrap (global): ~/.config/opencode/opencode.json
+    if let Some(ref h) = home {
+        let path = PathBuf::from(h)
+            .join(".config")
+            .join("opencode")
+            .join("opencode.json");
+        if has_gate_mcp_wrap(&path, "mcp") {
+            found.push(format!("opencode MCP wrap ({})", path.display()));
+        }
+    }
+
+    // opencode MCP wrap (project): opencode.json
+    if has_gate_mcp_wrap(&PathBuf::from("opencode.json"), "mcp") {
+        found.push("opencode MCP wrap (opencode.json)".to_string());
+    }
+
     if found.is_empty() {
         println!("No harness integrations detected.");
         println!("Run `gate init` (Claude Code) or `gate init --harness <opencode|cursor|copilot-cli>` to install.");
@@ -189,6 +244,22 @@ fn report_harness_installations() {
     if !in_git_repo {
         println!("\nNote: Project-level integrations (Copilot CLI) can only be detected from within a git repository.");
     }
+}
+
+fn has_gate_mcp_wrap(path: &PathBuf, key: &str) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return false;
+    };
+    v.get(key)
+        .and_then(|s| s.as_object())
+        .map(|servers| servers.values().any(crate::init::is_gate_mcp_proxy))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

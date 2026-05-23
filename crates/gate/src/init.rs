@@ -442,7 +442,7 @@ fn parse_servers_filter(raw: Option<&str>) -> Option<Vec<String>> {
 /// Returns true if an MCP server entry is already proxied through `gate mcp`.
 /// Handles both claude-code format { "command": "gate", "args": ["mcp", ...] }
 /// and opencode format { "command": ["gate", "mcp", ...] }.
-fn is_gate_mcp_proxy(entry: &Value) -> bool {
+pub(crate) fn is_gate_mcp_proxy(entry: &Value) -> bool {
     let cmd = entry.get("command");
     // claude-code: command is the string "gate", args[0] is "mcp"
     let claude_format = cmd.and_then(|c| c.as_str()) == Some("gate")
