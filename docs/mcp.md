@@ -37,6 +37,12 @@ gate init --harness copilot-cli --scope project --wrap-mcp
 
 # Copilot CLI — user-level ~/.copilot/mcp-config.json (dry-run)
 gate init --harness copilot-cli --wrap-mcp
+
+# Codex CLI — user-level (~/.codex/config.toml) (dry-run)
+gate init --harness codex --wrap-mcp
+
+# Codex CLI — project-level (.codex/config.toml) (dry-run)
+gate init --harness codex --scope project --wrap-mcp
 ```
 
 Already-proxied servers are skipped automatically, so re-running is safe.
@@ -66,6 +72,12 @@ gate init --harness copilot-cli --mcp postgres --mcp-cmd "uvx mcp-server-postgre
 
 # Copilot CLI — project-level (.mcp.json)
 gate init --harness copilot-cli --scope project --mcp postgres --mcp-cmd "uvx mcp-server-postgres"
+
+# Codex CLI — user-level (~/.codex/config.toml)
+gate init --harness codex --mcp postgres --mcp-cmd "uvx mcp-server-postgres"
+
+# Codex CLI — project-level (.codex/config.toml)
+gate init --harness codex --scope project --mcp postgres --mcp-cmd "uvx mcp-server-postgres"
 ```
 
 > **Cursor project-scope note:** After registering a project-scoped server (`--harness cursor --scope project`), re-enable it in Cursor's **Settings → Tools & MCPs**. User-scoped servers (`~/.cursor/mcp.json`) do not require this step.

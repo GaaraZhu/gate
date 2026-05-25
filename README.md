@@ -128,7 +128,7 @@ Run `gate validate` to confirm your config is valid before the first session.
 
 ### Bash tooling path
 
-Every Bash command passes through `gate hook` first. Commands that match a configured tool are silently rewritten to `gate run -- <original command>`, which spawns the subprocess and pipes stdout through the two-gate detection pipeline. The rewrite happens in the harness's pre-tool-execution hook — it is **enforcing** in Claude Code, OpenCode, Cursor, and GitHub Copilot CLI; the agent cannot bypass it. Humans and CI scripts running outside the harness are untouched.
+Every Bash command passes through `gate hook` first. Commands that match a configured tool are silently rewritten to `gate run -- <original command>`, which spawns the subprocess and pipes stdout through the two-gate detection pipeline. The rewrite happens in the harness's pre-tool-execution hook — it is **enforcing** in Claude Code, OpenCode, Cursor, GitHub Copilot CLI, and Codex CLI; the agent cannot bypass it. Humans and CI scripts running outside the harness are untouched.
 
 ```
 AI asks to run: tkpsql query --sql "SELECT * FROM users"
