@@ -64,9 +64,16 @@ pub fn run(
                 };
                 wrap_mcp_claude(&path, filter.as_deref(), yes);
             }
+            "codex" => {
+                let path = match codex_config_path(scope) {
+                    Ok(p) => p,
+                    Err(e) => exit_with_error(&e),
+                };
+                wrap_mcp_codex(&path, filter.as_deref(), yes);
+            }
             _ => exit_with_error(&format!(
                 "--wrap-mcp is not supported for harness '{harness}'; \
-                 supported: claude-code, opencode, copilot-cli, cursor"
+                 supported: claude-code, opencode, copilot-cli, cursor, codex"
             )),
         }
         return;
@@ -108,9 +115,16 @@ pub fn run(
                 };
                 register_mcp_server(&path, server_name, cmd_str);
             }
+            "codex" => {
+                let path = match codex_config_path(scope) {
+                    Ok(p) => p,
+                    Err(e) => exit_with_error(&e),
+                };
+                register_mcp_server_codex(&path, server_name, cmd_str);
+            }
             _ => exit_with_error(&format!(
                 "MCP registration is not supported for harness '{harness}'; \
-                 supported: claude-code, opencode, copilot-cli, cursor"
+                 supported: claude-code, opencode, copilot-cli, cursor, codex"
             )),
         }
         return;
@@ -777,6 +791,177 @@ pub(crate) fn cursor_mcp_path(scope: &str) -> Result<PathBuf, String> {
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|_| "cannot resolve home directory: set HOME or USERPROFILE".to_string())?;
     Ok(PathBuf::from(home).join(".cursor").join("mcp.json"))
+}
+
+// ── Codex MCP registration / wrap (TOML) ────────────────────────────────────
+
+/// Resolve the Codex config path for the given scope.
+/// "project" → `.codex/config.toml`; anything else ("user", "global") → `~/.codex/config.toml`.
+pub(crate) fn codex_config_path(scope: &str) -> Result<PathBuf, String> {
+    if scope == "project" {
+        return Ok(PathBuf::from(".codex").join("config.toml"));
+    }
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "cannot resolve home directory: set HOME or USERPROFILE".to_string())?;
+    Ok(PathBuf::from(home).join(".codex").join("config.toml"))
+}
+
+fn read_toml_doc(path: &Path) -> toml_edit::DocumentMut {
+    if !path.exists() {
+        return toml_edit::DocumentMut::new();
+    }
+    let contents = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to read {}: {e}", path.display())));
+    contents
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to parse {}: {e}", path.display())))
+}
+
+fn write_toml_atomic(path: &Path, doc: &toml_edit::DocumentMut) -> anyhow::Result<()> {
+    let toml_str = doc.to_string();
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("config path has no parent directory"))?;
+    std::fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow::anyhow!("config path has no filename"))?;
+    let tmp_path = parent.join(format!("{file_name}.gate_tmp"));
+    std::fs::write(&tmp_path, &toml_str)?;
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+/// Returns true if a Codex MCP server entry is already proxied through `gate mcp`.
+pub(crate) fn is_codex_gate_mcp_proxy(entry: &toml_edit::Item) -> bool {
+    entry.get("command").and_then(|c| c.as_str()) == Some("gate")
+        && entry
+            .get("args")
+            .and_then(|a| a.as_array())
+            .and_then(|arr| arr.iter().next())
+            .and_then(|v| v.as_str())
+            == Some("mcp")
+}
+
+fn register_mcp_server_codex(path: &Path, server_name: &str, cmd_str: &str) {
+    let upstream_parts = match shell_words::split(cmd_str) {
+        Ok(parts) if !parts.is_empty() => parts,
+        Ok(_) => exit_with_error("--mcp-cmd must not be empty"),
+        Err(e) => exit_with_error(&format!("invalid --mcp-cmd: {e}")),
+    };
+
+    let mut args_arr = toml_edit::Array::new();
+    args_arr.push("mcp");
+    args_arr.push("--name");
+    args_arr.push(server_name);
+    args_arr.push("--");
+    for part in &upstream_parts {
+        args_arr.push(part.as_str());
+    }
+
+    let mut doc = read_toml_doc(path);
+
+    if !doc.contains_key("mcp_servers") {
+        doc.insert(
+            "mcp_servers",
+            toml_edit::Item::Table(toml_edit::Table::new()),
+        );
+    }
+
+    let mcp_servers = doc["mcp_servers"]
+        .as_table_mut()
+        .unwrap_or_else(|| exit_with_error("mcp_servers in config.toml is not a table"));
+
+    let mut server_table = toml_edit::Table::new();
+    server_table["command"] = toml_edit::value("gate");
+    server_table["args"] = toml_edit::value(args_arr);
+    mcp_servers.insert(server_name, toml_edit::Item::Table(server_table));
+
+    write_toml_atomic(path, &doc)
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to write {}: {e}", path.display())));
+    println!(
+        "MCP server '{}' registered in {} (command: gate mcp -- {})",
+        server_name,
+        path.display(),
+        upstream_parts.join(" ")
+    );
+    println!("Run `gate mcp -- {cmd_str}` to test the proxy manually.");
+}
+
+fn wrap_mcp_codex(path: &Path, filter: Option<&[String]>, apply: bool) {
+    let mut doc = read_toml_doc(path);
+
+    let (to_wrap, already_proxied, server_names) = {
+        let Some(mcp_servers) = doc.get("mcp_servers").and_then(|s| s.as_table()) else {
+            println!("No MCP servers found in {}.", path.display());
+            return;
+        };
+
+        let mut to_wrap: Vec<(String, String, Vec<String>)> = Vec::new();
+        let mut already_proxied: Vec<String> = Vec::new();
+        let server_names: Vec<String> = mcp_servers.iter().map(|(k, _)| k.to_string()).collect();
+
+        for (name, entry) in mcp_servers.iter() {
+            if let Some(f) = filter {
+                if !f.iter().any(|n| n == name) {
+                    continue;
+                }
+            }
+
+            if is_codex_gate_mcp_proxy(entry) {
+                already_proxied.push(name.to_string());
+                continue;
+            }
+
+            let Some(cmd) = entry.get("command").and_then(|c| c.as_str()) else {
+                eprintln!(
+                    "warning: server '{name}' has no stdio command — skipping \
+                     (HTTP servers cannot be proxied by gate mcp)"
+                );
+                continue;
+            };
+
+            let args: Vec<String> = entry
+                .get("args")
+                .and_then(|a| a.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            to_wrap.push((name.to_string(), cmd.to_string(), args));
+        }
+
+        (to_wrap, already_proxied, server_names)
+    };
+
+    warn_unknown_servers(filter, server_names.iter().map(String::as_str));
+    print_wrap_plan(&to_wrap, &already_proxied, path, apply);
+
+    if !apply || to_wrap.is_empty() {
+        return;
+    }
+
+    for (name, cmd, args_vec) in &to_wrap {
+        let mut new_args = toml_edit::Array::new();
+        new_args.push("mcp");
+        new_args.push("--name");
+        new_args.push(name.as_str());
+        new_args.push("--");
+        new_args.push(cmd.as_str());
+        for arg in args_vec {
+            new_args.push(arg.as_str());
+        }
+        doc["mcp_servers"][name.as_str()]["command"] = toml_edit::value("gate");
+        doc["mcp_servers"][name.as_str()]["args"] = toml_edit::value(new_args);
+    }
+
+    write_toml_atomic(path, &doc)
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to write {}: {e}", path.display())));
 }
 
 // ── Cursor hook installation ─────────────────────────────────────────────────
@@ -1981,5 +2166,252 @@ mod tests {
         assert!(is_gate_hook_variant(
             "/usr/local/bin/gate hook --format codex"
         ));
+    }
+
+    // ── codex MCP registration ────────────────────────────────────────────────
+
+    fn tmp_codex_config() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        (dir, path)
+    }
+
+    fn read_toml(path: &PathBuf) -> toml_edit::DocumentMut {
+        let contents = std::fs::read_to_string(path).unwrap();
+        contents.parse::<toml_edit::DocumentMut>().unwrap()
+    }
+
+    #[test]
+    fn codex_config_path_global_uses_home() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let saved = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", "/test/home") };
+        let path = codex_config_path("global").unwrap();
+        match saved {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(path, PathBuf::from("/test/home/.codex/config.toml"));
+    }
+
+    #[test]
+    fn codex_config_path_project_is_relative() {
+        let path = codex_config_path("project").unwrap();
+        assert_eq!(path, PathBuf::from(".codex/config.toml"));
+    }
+
+    #[test]
+    fn codex_register_creates_new_file() {
+        let (_dir, path) = tmp_codex_config();
+        register_mcp_server_codex(&path, "postgres", "uvx mcp-server-postgres");
+        let doc = read_toml(&path);
+        assert_eq!(
+            doc["mcp_servers"]["postgres"]["command"].as_str().unwrap(),
+            "gate"
+        );
+        let args = doc["mcp_servers"]["postgres"]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            [
+                "mcp",
+                "--name",
+                "postgres",
+                "--",
+                "uvx",
+                "mcp-server-postgres"
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_register_preserves_existing_servers() {
+        let (_dir, path) = tmp_codex_config();
+        let initial = "[mcp_servers.github]\ncommand = \"npx\"\nargs = [\"@mcp/github\"]\n";
+        std::fs::write(&path, initial).unwrap();
+        register_mcp_server_codex(&path, "postgres", "uvx mcp-server-postgres");
+        let doc = read_toml(&path);
+        assert_eq!(
+            doc["mcp_servers"]["github"]["command"].as_str().unwrap(),
+            "npx"
+        );
+        assert_eq!(
+            doc["mcp_servers"]["postgres"]["command"].as_str().unwrap(),
+            "gate"
+        );
+    }
+
+    #[test]
+    fn codex_register_overwrites_same_name() {
+        let (_dir, path) = tmp_codex_config();
+        register_mcp_server_codex(&path, "postgres", "uvx mcp-server-postgres --old");
+        register_mcp_server_codex(&path, "postgres", "uvx mcp-server-postgres --new");
+        let doc = read_toml(&path);
+        let args = doc["mcp_servers"]["postgres"]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>();
+        assert!(args.contains(&"--new"));
+        assert!(!args.contains(&"--old"));
+    }
+
+    #[test]
+    fn codex_register_multi_word_cmd_split_into_args() {
+        let (_dir, path) = tmp_codex_config();
+        register_mcp_server_codex(&path, "pg", "uvx mcp-server-postgres --db mydb");
+        let doc = read_toml(&path);
+        let args = doc["mcp_servers"]["pg"]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>();
+        // mcp, --name, pg, --, uvx, mcp-server-postgres, --db, mydb
+        assert_eq!(args.len(), 8);
+        assert_eq!(args[6], "--db");
+        assert_eq!(args[7], "mydb");
+    }
+
+    // ── codex MCP wrap ────────────────────────────────────────────────────────
+
+    #[test]
+    fn codex_wrap_dry_run_leaves_file_untouched() {
+        let (_dir, path) = tmp_codex_config();
+        let initial =
+            "[mcp_servers.postgres]\ncommand = \"uvx\"\nargs = [\"mcp-server-postgres\"]\n";
+        std::fs::write(&path, initial).unwrap();
+        wrap_mcp_codex(&path, None, false);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), initial);
+    }
+
+    #[test]
+    fn codex_wrap_apply_rewrites_command_and_args() {
+        let (_dir, path) = tmp_codex_config();
+        std::fs::write(
+            &path,
+            "[mcp_servers.postgres]\ncommand = \"uvx\"\nargs = [\"mcp-server-postgres\"]\n",
+        )
+        .unwrap();
+        wrap_mcp_codex(&path, None, true);
+        let doc = read_toml(&path);
+        assert_eq!(
+            doc["mcp_servers"]["postgres"]["command"].as_str().unwrap(),
+            "gate"
+        );
+        let args = doc["mcp_servers"]["postgres"]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            [
+                "mcp",
+                "--name",
+                "postgres",
+                "--",
+                "uvx",
+                "mcp-server-postgres"
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_wrap_preserves_env_and_other_keys() {
+        let (_dir, path) = tmp_codex_config();
+        std::fs::write(
+            &path,
+            "[mcp_servers.pg]\ncommand = \"uvx\"\nargs = [\"mcp-server-postgres\"]\n\
+             [mcp_servers.pg.env]\nPGHOST = \"localhost\"\n",
+        )
+        .unwrap();
+        wrap_mcp_codex(&path, None, true);
+        let doc = read_toml(&path);
+        assert_eq!(
+            doc["mcp_servers"]["pg"]["env"]["PGHOST"].as_str().unwrap(),
+            "localhost"
+        );
+        assert_eq!(
+            doc["mcp_servers"]["pg"]["command"].as_str().unwrap(),
+            "gate"
+        );
+    }
+
+    #[test]
+    fn codex_wrap_skips_already_proxied() {
+        let (_dir, path) = tmp_codex_config();
+        std::fs::write(
+            &path,
+            "[mcp_servers.already]\ncommand = \"gate\"\nargs = [\"mcp\", \"--\", \"uvx\", \"x\"]\n\
+             [mcp_servers.new]\ncommand = \"uvx\"\nargs = [\"mcp-server-y\"]\n",
+        )
+        .unwrap();
+        wrap_mcp_codex(&path, None, true);
+        let doc = read_toml(&path);
+        // already-proxied unchanged
+        let already_args = doc["mcp_servers"]["already"]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(already_args[2], "uvx");
+        // new one wrapped
+        assert_eq!(
+            doc["mcp_servers"]["new"]["command"].as_str().unwrap(),
+            "gate"
+        );
+    }
+
+    #[test]
+    fn codex_wrap_skips_http_server_no_command() {
+        let (_dir, path) = tmp_codex_config();
+        std::fs::write(
+            &path,
+            "[mcp_servers.myhttp]\nurl = \"https://api.example.com/mcp\"\n\
+             bearer_token_env_var = \"TOKEN\"\n",
+        )
+        .unwrap();
+        // apply=true but the only server is HTTP — file should not change
+        let before = std::fs::read_to_string(&path).unwrap();
+        wrap_mcp_codex(&path, None, true);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn codex_wrap_comments_survive_round_trip() {
+        let (_dir, path) = tmp_codex_config();
+        let initial = "# project config\n\
+             [mcp_servers.postgres]\n\
+             command = \"uvx\"\n\
+             args = [\"mcp-server-postgres\"]\n";
+        std::fs::write(&path, initial).unwrap();
+        wrap_mcp_codex(&path, None, true);
+        let result = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            result.contains("# project config"),
+            "comment must survive: {result}"
+        );
+    }
+
+    #[test]
+    fn is_codex_gate_mcp_proxy_detected() {
+        let toml = "[s]\ncommand = \"gate\"\nargs = [\"mcp\", \"--\", \"uvx\"]\n";
+        let doc = toml.parse::<toml_edit::DocumentMut>().unwrap();
+        assert!(is_codex_gate_mcp_proxy(&doc["s"]));
+    }
+
+    #[test]
+    fn is_codex_gate_mcp_proxy_not_detected_for_other_command() {
+        let toml = "[s]\ncommand = \"uvx\"\nargs = [\"mcp-server-postgres\"]\n";
+        let doc = toml.parse::<toml_edit::DocumentMut>().unwrap();
+        assert!(!is_codex_gate_mcp_proxy(&doc["s"]));
     }
 }

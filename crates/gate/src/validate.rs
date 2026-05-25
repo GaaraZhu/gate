@@ -266,6 +266,20 @@ fn report_harness_installations() {
         mcp_wraps.push("opencode (opencode.json)".to_string());
     }
 
+    // Codex MCP wrap (global): ~/.codex/config.toml
+    if let Some(ref h) = home {
+        let path = PathBuf::from(h).join(".codex").join("config.toml");
+        if has_gate_mcp_wrap_toml(&path) {
+            mcp_wraps.push(format!("Codex ({})", path.display()));
+        }
+    }
+
+    // Codex MCP wrap (project): .codex/config.toml
+    let codex_config_project = PathBuf::from(".codex").join("config.toml");
+    if has_gate_mcp_wrap_toml(&codex_config_project) {
+        mcp_wraps.push("Codex (.codex/config.toml)".to_string());
+    }
+
     if hooks.is_empty() && mcp_wraps.is_empty() {
         println!("No harness integrations detected.");
         println!("Run `gate init` (Claude Code) or `gate init --harness <opencode|cursor|copilot-cli|codex>` to install.");
@@ -306,6 +320,26 @@ fn has_gate_mcp_wrap(path: &PathBuf, key: &str) -> bool {
         .and_then(|s| s.as_object())
         .map(|servers| servers.values().any(crate::init::is_gate_mcp_proxy))
         .unwrap_or(false)
+}
+
+fn has_gate_mcp_wrap_toml(path: &PathBuf) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(doc) = contents.parse::<toml_edit::DocumentMut>() else {
+        return false;
+    };
+    let mcp_servers = match doc.get("mcp_servers").and_then(|s| s.as_table()) {
+        Some(t) => t,
+        None => return false,
+    };
+    let found = mcp_servers
+        .iter()
+        .any(|(_, entry)| crate::init::is_codex_gate_mcp_proxy(entry));
+    found
 }
 
 #[cfg(test)]

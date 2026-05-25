@@ -10,6 +10,7 @@ serde_yaml = { workspace = true }
 shell-words = { workspace = true }
 anyhow = { workspace = true }
 regex = { workspace = true }
+toml_edit = { workspace = true }
 common = { path = "../common" }
 gate1 = { path = "../gate1" }
 mcp = { path = "../mcp" }
