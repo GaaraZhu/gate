@@ -11,6 +11,7 @@ enum Format {
     ClaudeCode,
     Copilot,
     Cursor,
+    Codex,
 }
 
 pub fn run(format: &str) {
@@ -18,9 +19,10 @@ pub fn run(format: &str) {
         "claude-code" => Format::ClaudeCode,
         "copilot" => Format::Copilot,
         "cursor" => Format::Cursor,
+        "codex" => Format::Codex,
         _ => {
             eprintln!(
-                "gate hook: unknown format '{format}'; supported: claude-code, copilot, cursor"
+                "gate hook: unknown format '{format}'; supported: claude-code, copilot, cursor, codex"
             );
             std::process::exit(1);
         }
@@ -127,7 +129,7 @@ fn process(stdin: &str, config: &Config, format: Format) -> Option<String> {
     }
 
     match format {
-        Format::ClaudeCode => Some(
+        Format::ClaudeCode | Format::Codex => Some(
             json!({
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
@@ -161,6 +163,14 @@ fn block_response(message: &str, format: &Format) -> String {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "block",
                 "message": message,
+            }
+        })
+        .to_string(),
+        Format::Codex => json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": message,
             }
         })
         .to_string(),
@@ -1071,6 +1081,81 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         let cmd = v["modifiedArgs"]["command"].as_str().unwrap();
         assert!(cmd.starts_with("gate run -- psql"), "got: {cmd}");
+    }
+
+    // ── codex format tests ────────────────────────────────────────────────────
+
+    fn process_codex(stdin: &str, config: &Config) -> Option<String> {
+        process(stdin, config, Format::Codex)
+    }
+
+    fn is_codex_deny(output: &str) -> bool {
+        let v: Value = serde_json::from_str(output).unwrap();
+        v["hookSpecificOutput"]["permissionDecision"]
+            .as_str()
+            .unwrap_or("")
+            == "deny"
+    }
+
+    #[test]
+    fn codex_format_passthrough_is_none() {
+        let _guard = LOCK.lock().unwrap();
+        let config = default_config();
+        assert!(process_codex(&make_input("ls -la"), &config).is_none());
+    }
+
+    #[test]
+    fn codex_format_blocks_gate_enable_with_deny() {
+        let _guard = LOCK.lock().unwrap();
+        let config = default_config();
+        let out = process_codex(&make_input("gate enable"), &config).unwrap();
+        assert!(is_codex_deny(&out));
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(v["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .is_some());
+        assert!(v["hookSpecificOutput"].get("message").is_none());
+    }
+
+    #[test]
+    fn codex_format_rewrite_emits_hookspecificoutput() {
+        let _guard = LOCK.lock().unwrap();
+        let config = default_config();
+        let out = process_codex(&make_input("psql -c 'SELECT email FROM users'"), &config).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["hookSpecificOutput"]["permissionDecision"]
+                .as_str()
+                .unwrap(),
+            "allow"
+        );
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.starts_with("gate run -- psql"), "got: {cmd}");
+        assert!(v.get("permissionDecision").is_none());
+        assert!(v.get("permission").is_none());
+    }
+
+    #[test]
+    fn codex_format_preserves_extra_tool_input_fields() {
+        let _guard = LOCK.lock().unwrap();
+        let config = default_config();
+        let input = json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "tkpsql --sql 'SELECT 1'",
+                "restart": false
+            }
+        })
+        .to_string();
+        let out = process_codex(&input, &config).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["hookSpecificOutput"]["updatedInput"]["restart"],
+            json!(false)
+        );
     }
 
     // ── cursor format tests ───────────────────────────────────────────────────

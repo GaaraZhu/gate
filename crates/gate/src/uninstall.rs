@@ -1,6 +1,6 @@
 use crate::init::{
-    claude_settings_path, copilot_entry_has_gate_hook, cursor_entry_has_gate_hook,
-    cursor_hooks_path, entry_has_gate_hook, find_git_root,
+    claude_settings_path, codex_hooks_path, copilot_entry_has_gate_hook,
+    cursor_entry_has_gate_hook, cursor_hooks_path, entry_has_gate_hook, find_git_root,
 };
 use crate::init_opencode::{has_gate_header, plugin_path};
 use common::config::config_path;
@@ -18,6 +18,7 @@ enum Action {
     Plugin(PathBuf),
     CopilotHook(PathBuf),
     CursorHook(PathBuf),
+    CodexHook(PathBuf),
     StatsFile(PathBuf),
 }
 
@@ -29,6 +30,7 @@ impl Action {
             Action::Plugin(p) => format!("Delete opencode plugin {}", p.display()),
             Action::CopilotHook(p) => format!("Remove gate hook entry from {}", p.display()),
             Action::CursorHook(p) => format!("Remove gate hook entry from {}", p.display()),
+            Action::CodexHook(p) => format!("Remove gate hook entry from {}", p.display()),
             Action::StatsFile(p) => format!("Delete stats log {}", p.display()),
         }
     }
@@ -78,6 +80,11 @@ fn collect_actions() -> Vec<Action> {
     }
     for scope in &["global", "project"] {
         if let Some(a) = plan_remove_cursor_hook(scope) {
+            actions.push(a);
+        }
+    }
+    for scope in &["global", "project"] {
+        if let Some(a) = plan_remove_codex_hook(scope) {
             actions.push(a);
         }
     }
@@ -183,6 +190,38 @@ fn plan_remove_copilot_hook() -> Option<Action> {
     }
 }
 
+fn plan_remove_codex_hook(scope: &str) -> Option<Action> {
+    let path = codex_hooks_path(scope).ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let settings: Value = serde_json::from_str(&contents).ok()?;
+    let arr = settings
+        .get("hooks")
+        .and_then(|h| h.get("PreToolUse"))
+        .and_then(|p| p.as_array())?;
+    if arr.iter().any(entry_has_gate_hook) {
+        Some(Action::CodexHook(path))
+    } else {
+        None
+    }
+}
+
+fn strip_codex_gate_hook(settings: &mut Value) -> bool {
+    let arr = match settings
+        .get_mut("hooks")
+        .and_then(|h| h.get_mut("PreToolUse"))
+        .and_then(|p| p.as_array_mut())
+    {
+        Some(a) => a,
+        None => return false,
+    };
+    let before = arr.len();
+    arr.retain(|entry| !entry_has_gate_hook(entry));
+    arr.len() < before
+}
+
 fn execute_action(action: &Action) {
     match action {
         Action::Hook(path) => {
@@ -255,6 +294,27 @@ fn execute_action(action: &Action) {
                 }
             };
             strip_cursor_gate_hook(&mut settings);
+            match write_atomic(path, &settings) {
+                Ok(()) => println!("Removed hook from {}", path.display()),
+                Err(e) => eprintln!("gate: failed to write {}: {e}", path.display()),
+            }
+        }
+        Action::CodexHook(path) => {
+            let contents = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("gate: failed to read {}: {e}", path.display());
+                    return;
+                }
+            };
+            let mut settings: Value = match serde_json::from_str(&contents) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("gate: failed to parse {}: {e}", path.display());
+                    return;
+                }
+            };
+            strip_codex_gate_hook(&mut settings);
             match write_atomic(path, &settings) {
                 Ok(()) => println!("Removed hook from {}", path.display()),
                 Err(e) => eprintln!("gate: failed to write {}: {e}", path.display()),
@@ -714,6 +774,107 @@ mod tests {
         });
         fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
         execute_action(&Action::CursorHook(path.clone()));
+        assert!(!dir.path().join("hooks.json.gate_tmp").exists());
+    }
+
+    // ── strip_codex_gate_hook ────────────────────────────────────────────────
+
+    #[test]
+    fn strip_codex_noop_when_no_hooks_key() {
+        let mut s = json!({});
+        assert!(!strip_codex_gate_hook(&mut s));
+    }
+
+    #[test]
+    fn strip_codex_removes_gate_entry() {
+        let mut s = json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "^Bash$", "hooks": [{ "type": "command", "command": "gate hook --format codex" }] }
+                ]
+            }
+        });
+        assert!(strip_codex_gate_hook(&mut s));
+        assert!(s["hooks"]["PreToolUse"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn strip_codex_removes_absolute_path_variant() {
+        let mut s = json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "^Bash$", "hooks": [{ "type": "command", "command": "/usr/local/bin/gate hook --format codex" }] }
+                ]
+            }
+        });
+        assert!(strip_codex_gate_hook(&mut s));
+        assert!(s["hooks"]["PreToolUse"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn strip_codex_preserves_unrelated_entries() {
+        let mut s = json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "^Edit$", "hooks": [{ "type": "command", "command": "other-hook" }] },
+                    { "matcher": "^Bash$", "hooks": [{ "type": "command", "command": "gate hook --format codex" }] }
+                ]
+            }
+        });
+        assert!(strip_codex_gate_hook(&mut s));
+        let arr = s["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(
+            arr[0]["hooks"][0]["command"].as_str().unwrap(),
+            "other-hook"
+        );
+    }
+
+    #[test]
+    fn strip_codex_noop_when_no_gate_entry() {
+        let mut s = json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "^Edit$", "hooks": [{ "type": "command", "command": "other-hook" }] }
+                ]
+            }
+        });
+        assert!(!strip_codex_gate_hook(&mut s));
+        assert_eq!(s["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    }
+
+    // ── execute_action: CodexHook ────────────────────────────────────────────
+
+    #[test]
+    fn execute_codex_hook_writes_updated_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "^Bash$", "hooks": [{ "type": "command", "command": "gate hook --format codex" }] }
+                ]
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+        execute_action(&Action::CodexHook(path.clone()));
+        let result: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(result["hooks"]["PreToolUse"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn execute_codex_hook_leaves_no_tmp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "^Bash$", "hooks": [{ "type": "command", "command": "gate hook --format codex" }] }
+                ]
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+        execute_action(&Action::CodexHook(path.clone()));
         assert!(!dir.path().join("hooks.json.gate_tmp").exists());
     }
 }

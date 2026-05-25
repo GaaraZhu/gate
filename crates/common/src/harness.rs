@@ -5,6 +5,7 @@ const HARNESS_VARS: &[&str] = &[
     "COPILOT_RUN_APP",
     "CURSOR_AGENT",
     "CURSOR_TRACE_ID",
+    "CODEX_THREAD_ID",
 ];
 
 pub fn is_agent_harness() -> bool {
@@ -87,5 +88,10 @@ mod tests {
     #[test]
     fn cursor_trace_id_detected() {
         assert!(with_only_var("CURSOR_TRACE_ID", is_agent_harness));
+    }
+
+    #[test]
+    fn codex_thread_id_detected() {
+        assert!(with_only_var("CODEX_THREAD_ID", is_agent_harness));
     }
 }

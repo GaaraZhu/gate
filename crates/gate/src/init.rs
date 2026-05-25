@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 const HOOK_COMMAND: &str = "gate hook";
 const COPILOT_HOOK_COMMAND: &str = "gate hook --format copilot";
 const CURSOR_HOOK_COMMAND: &str = "gate hook --format cursor";
+const CODEX_HOOK_COMMAND: &str = "gate hook --format codex";
 
 pub fn run(
     harness: &str,
@@ -126,8 +127,9 @@ pub fn run(
         "opencode" => crate::init_opencode::run(scope),
         "copilot-cli" => init_copilot_cli(),
         "cursor" => init_cursor(scope),
+        "codex" => init_codex(scope),
         _ => exit_with_error(&format!(
-            "unsupported harness '{harness}'; supported: claude-code, opencode, copilot-cli, cursor. \
+            "unsupported harness '{harness}'; supported: claude-code, opencode, copilot-cli, cursor, codex. \
              Usage: gate init --harness <harness>"
         )),
     }
@@ -880,6 +882,94 @@ pub(crate) fn cursor_entry_has_gate_hook(entry: &Value) -> bool {
         .and_then(|c| c.as_str())
         .map(is_gate_hook_variant)
         .unwrap_or(false)
+}
+
+// ── Codex hook installation ──────────────────────────────────────────────────
+
+/// Resolve the Codex hooks config path for the given scope.
+/// "project" → `.codex/hooks.json`; anything else ("user", "global") → `~/.codex/hooks.json`.
+pub(crate) fn codex_hooks_path(scope: &str) -> Result<PathBuf, String> {
+    if scope == "project" {
+        return Ok(PathBuf::from(".codex").join("hooks.json"));
+    }
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "cannot resolve home directory: set HOME or USERPROFILE".to_string())?;
+    Ok(PathBuf::from(home).join(".codex").join("hooks.json"))
+}
+
+fn init_codex(scope: &str) {
+    let path = match codex_hooks_path(scope) {
+        Ok(p) => p,
+        Err(e) => exit_with_error(&format!("cannot resolve codex hooks path: {e}")),
+    };
+    run_codex_with_path(&path, scope);
+}
+
+fn run_codex_with_path(path: &Path, scope: &str) {
+    let settings = read_settings(path);
+    match insert_codex_hook(settings) {
+        CodexHookResult::AlreadyInstalled => {
+            println!("gate hook is already installed in {}", path.display());
+        }
+        CodexHookResult::Done(updated) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                    exit_with_error(&format!("failed to create {}: {e}", parent.display()))
+                });
+            }
+            write_atomic(path, &updated).unwrap_or_else(|e| {
+                exit_with_error(&format!("failed to write {}: {e}", path.display()))
+            });
+            println!("gate hook installed in {}", path.display());
+            println!("Run `gate config` to define which tools to intercept.");
+            if scope == "project" {
+                println!("Note: project-scope hooks only take effect after you trust this repo in Codex.");
+            }
+        }
+    }
+}
+
+enum CodexHookResult {
+    AlreadyInstalled,
+    Done(Value),
+}
+
+fn new_codex_hook_entry() -> Value {
+    json!({
+        "matcher": "^Bash$",
+        "hooks": [{ "type": "command", "command": CODEX_HOOK_COMMAND }]
+    })
+}
+
+fn insert_codex_hook(mut settings: Value) -> CodexHookResult {
+    normalize_settings(&mut settings);
+
+    let already = {
+        let arr = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        arr.iter().any(|entry| {
+            entry
+                .get("hooks")
+                .and_then(|h| h.as_array())
+                .map(|hooks| {
+                    hooks.iter().any(|h| {
+                        h.get("command").and_then(|c| c.as_str()) == Some(CODEX_HOOK_COMMAND)
+                    })
+                })
+                .unwrap_or(false)
+        })
+    };
+    if already {
+        return CodexHookResult::AlreadyInstalled;
+    }
+
+    {
+        let arr = settings["hooks"]["PreToolUse"].as_array_mut().unwrap();
+        arr.retain(|entry| !entry_has_gate_hook(entry));
+        arr.push(new_codex_hook_entry());
+    }
+
+    CodexHookResult::Done(settings)
 }
 
 /// Walk up from CWD to find the root of the current git repository.
@@ -1765,5 +1855,131 @@ mod tests {
     fn cursor_hooks_path_project_is_relative() {
         let path = cursor_hooks_path("project").unwrap();
         assert_eq!(path, PathBuf::from(".cursor/hooks.json"));
+    }
+
+    // ── codex init ────────────────────────────────────────────────────────────
+
+    fn tmp_codex_path() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".codex/hooks.json");
+        (dir, path)
+    }
+
+    #[test]
+    fn codex_creates_hook_file_from_scratch() {
+        let (_dir, path) = tmp_codex_path();
+        run_codex_with_path(&path, "global");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(
+            arr[0]["hooks"][0]["command"].as_str().unwrap(),
+            CODEX_HOOK_COMMAND
+        );
+        assert_eq!(arr[0]["matcher"].as_str().unwrap(), "^Bash$");
+    }
+
+    #[test]
+    fn codex_idempotent_on_second_run() {
+        let (_dir, path) = tmp_codex_path();
+        run_codex_with_path(&path, "global");
+        run_codex_with_path(&path, "global");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        let gate_count = arr
+            .iter()
+            .filter(|e| {
+                e.get("hooks")
+                    .and_then(|h| h.as_array())
+                    .map(|h| {
+                        h.iter()
+                            .any(|x| x["command"].as_str() == Some(CODEX_HOOK_COMMAND))
+                    })
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(gate_count, 1);
+    }
+
+    #[test]
+    fn codex_preserves_existing_hooks() {
+        let (_dir, path) = tmp_codex_path();
+        let initial = json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "^Edit$", "hooks": [{ "type": "command", "command": "other-hook" }] }
+                ]
+            }
+        });
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string_pretty(&initial).unwrap()).unwrap();
+        run_codex_with_path(&path, "global");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        let cmds: Vec<&str> = arr
+            .iter()
+            .filter_map(|e| e["hooks"][0]["command"].as_str())
+            .collect();
+        assert!(cmds.contains(&"other-hook"));
+        assert!(cmds.contains(&CODEX_HOOK_COMMAND));
+    }
+
+    #[test]
+    fn codex_replaces_absolute_path_variant() {
+        let (_dir, path) = tmp_codex_path();
+        let initial = json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "^Bash$", "hooks": [{ "type": "command", "command": "/usr/local/bin/gate hook --format codex" }] }
+                ]
+            }
+        });
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string_pretty(&initial).unwrap()).unwrap();
+        run_codex_with_path(&path, "global");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(
+            arr[0]["hooks"][0]["command"].as_str().unwrap(),
+            CODEX_HOOK_COMMAND
+        );
+    }
+
+    #[test]
+    fn codex_matcher_is_caret_bash_dollar() {
+        let (_dir, path) = tmp_codex_path();
+        run_codex_with_path(&path, "global");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr[0]["matcher"].as_str().unwrap(), "^Bash$");
+    }
+
+    #[test]
+    fn codex_hooks_path_global_uses_home() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let saved = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", "/test/home") };
+        let path = codex_hooks_path("global").unwrap();
+        match saved {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(path, PathBuf::from("/test/home/.codex/hooks.json"));
+    }
+
+    #[test]
+    fn codex_hooks_path_project_is_relative() {
+        let path = codex_hooks_path("project").unwrap();
+        assert_eq!(path, PathBuf::from(".codex/hooks.json"));
+    }
+
+    #[test]
+    fn is_gate_hook_variant_matches_codex_format() {
+        assert!(is_gate_hook_variant(CODEX_HOOK_COMMAND));
+        assert!(is_gate_hook_variant(
+            "/usr/local/bin/gate hook --format codex"
+        ));
     }
 }

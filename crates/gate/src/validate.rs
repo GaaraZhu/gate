@@ -177,6 +177,40 @@ fn report_harness_installations() {
         }
     }
 
+    // Codex global
+    if let Ok(home) = std::env::var("HOME") {
+        let path = PathBuf::from(&home).join(".codex").join("hooks.json");
+        if path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    if v["hooks"]["PreToolUse"]
+                        .as_array()
+                        .map(|arr| arr.iter().any(crate::init::entry_has_gate_hook))
+                        .unwrap_or(false)
+                    {
+                        hooks.push(format!("Codex ({})", path.display()));
+                    }
+                }
+            }
+        }
+    }
+
+    // Codex project
+    let codex_project_path = PathBuf::from(".codex").join("hooks.json");
+    if codex_project_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&codex_project_path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) {
+                if v["hooks"]["PreToolUse"]
+                    .as_array()
+                    .map(|arr| arr.iter().any(crate::init::entry_has_gate_hook))
+                    .unwrap_or(false)
+                {
+                    hooks.push("Codex (.codex/hooks.json)".to_string());
+                }
+            }
+        }
+    }
+
     // ── MCP wrap detections ──────────────────────────────────────────────────
 
     let home = std::env::var("HOME").ok();
@@ -234,7 +268,7 @@ fn report_harness_installations() {
 
     if hooks.is_empty() && mcp_wraps.is_empty() {
         println!("No harness integrations detected.");
-        println!("Run `gate init` (Claude Code) or `gate init --harness <opencode|cursor|copilot-cli>` to install.");
+        println!("Run `gate init` (Claude Code) or `gate init --harness <opencode|cursor|copilot-cli|codex>` to install.");
     } else {
         if !hooks.is_empty() {
             println!("Bash hooks:");
