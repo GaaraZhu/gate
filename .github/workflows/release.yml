@@ -151,6 +151,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
 
       - name: Install git-cliff
         uses: taiki-e/install-action@v2
