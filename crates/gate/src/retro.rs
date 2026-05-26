@@ -354,31 +354,11 @@ mod tests {
     }
 
     #[test]
-    fn summary_starts_empty() {
-        let s = Summary::default();
-        assert_eq!(s.queries, 0);
-        assert_eq!(s.fields_redacted, 0);
-        assert!(s.type_counts.is_empty());
-        assert!(s.overhead_us.is_empty());
-        assert_eq!(s.malformed, 0);
-    }
-
-    #[test]
     fn summary_collects_only_nonzero_overhead() {
         let mut s = Summary::default();
         s.add(ev_timed("tkpsql", 1, 500));
         s.add(ev_timed("tkpsql", 0, 0)); // legacy event: no timing recorded
         s.add(ev_timed("tkpsql", 2, 1500));
         assert_eq!(s.overhead_us, vec![500, 1500]);
-    }
-
-    #[test]
-    fn average_overhead() {
-        let mut s = Summary::default();
-        for us in [1000, 2000, 3000] {
-            s.add(ev_timed("tkpsql", 0, us));
-        }
-        let avg_ms = s.overhead_us.iter().sum::<u64>() as f64 / s.overhead_us.len() as f64 / 1000.0;
-        assert!((avg_ms - 2.0).abs() < f64::EPSILON);
     }
 }

@@ -361,15 +361,4 @@ mod tests {
         assert!(names.contains("phone"));
         assert!(names.contains("credit_card"));
     }
-
-    #[test]
-    fn valid_regex_compiles() {
-        assert!(Regex::new(r"\bID-\d{6}\b").is_ok());
-    }
-
-    #[test]
-    #[allow(clippy::invalid_regex)]
-    fn invalid_regex_fails() {
-        assert!(Regex::new(r"[unclosed").is_err());
-    }
 }

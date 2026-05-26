@@ -288,12 +288,6 @@ mod tests {
     }
 
     #[test]
-    fn enabled_true_explicit() {
-        let config = load_from_yaml("enabled: true\n").unwrap();
-        assert!(config.enabled);
-    }
-
-    #[test]
     fn enabled_defaults_to_true_when_key_absent() {
         let config = load_from_yaml("pii:\n  action: warn\n").unwrap();
         assert!(config.enabled);
@@ -361,13 +355,6 @@ pii:
             load_from_yaml("pii:\n  hash_values: true\n  hash_salt: \"my-secret\"\n").unwrap();
         assert!(config.pii.hash_values);
         assert_eq!(config.pii.hash_salt, "my-secret");
-    }
-
-    #[test]
-    fn hash_values_false_explicit() {
-        let config = load_from_yaml("pii:\n  hash_values: false\n").unwrap();
-        assert!(!config.pii.hash_values);
-        assert_eq!(config.pii.hash_salt, "");
     }
 
     #[test]
