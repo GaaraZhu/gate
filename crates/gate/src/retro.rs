@@ -148,14 +148,14 @@ fn print_report(s: &Summary) {
         "░".repeat(bar_width - filled.min(bar_width))
     );
 
+    println!(
+        "{:<TOOL_COL$}  {:>24}",
+        "PII fields redacted:", s.fields_redacted
+    );
     println!("{:<TOOL_COL$}  {:>24}", "Queries protected:", s.queries);
     println!(
         "{:<TOOL_COL$}  {:>24}",
         "Queries with PII:", s.queries_with_pii
-    );
-    println!(
-        "{:<TOOL_COL$}  {:>24}",
-        "PII fields redacted:", s.fields_redacted
     );
     println!();
     println!("{:<TOOL_COL$}  {}    {:.1}%", "Hit rate:", bar, hit_pct);
