@@ -93,6 +93,9 @@ pub struct RedactStats {
     pub total: usize,
     /// Per-PII-type counts. Keys are bare type labels (e.g. `"email"`).
     pub type_counts: HashMap<String, usize>,
+    /// Low-confidence match warnings (same strings as in `_gate_summary`).
+    /// Propagated to the stats log so `gate retro` can surface actionable hints.
+    pub warnings: Vec<String>,
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -161,6 +164,7 @@ pub fn redact_with_stats(
     let stats = RedactStats {
         total: summary.redacted,
         type_counts: summary.type_counts.clone(),
+        warnings: summary.warnings.clone(),
     };
     let value = apply_summary(redacted_payload, &summary, config.include_summary, &shape);
     (value, stats)
@@ -240,6 +244,35 @@ fn apply_summary(
 /// Each value in every row array is scanned using its positional column name.
 /// All other top-level fields (e.g. "count") are walked normally.
 #[allow(clippy::too_many_arguments)]
+/// First-pass probe: returns the PII type if the string value triggers any value-level
+/// check (Luhn, checksums, or regex). Does not redact or modify summary state.
+fn probe_value_pii(s: &str, patterns: &[CompiledPattern]) -> Option<String> {
+    if Luhn::check(s) {
+        return Some("credit_card".to_string());
+    }
+    if AuAbn::check(s) {
+        return Some("tax_id".to_string());
+    }
+    if AuMedicare::check(s) {
+        return Some("health".to_string());
+    }
+    if AuTfn::check(s) {
+        return Some("tax_id".to_string());
+    }
+    if NzIrd::check(s) {
+        return Some("tax_id".to_string());
+    }
+    if NzNhi::check(s) {
+        return Some("health".to_string());
+    }
+    let s_compact = s.replace(|c: char| c.is_ascii_whitespace(), "");
+    patterns
+        .iter()
+        .find(|p| p.regex.is_match(&s_compact))
+        .map(|p| p.name.clone())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn redact_columnar(
     payload: Value,
     col_field: &str,
@@ -266,8 +299,36 @@ fn redact_columnar(
         })
         .unwrap_or_default();
 
-    // Redact the rows array-of-arrays positionally.
     if let Some(Value::Array(rows)) = map.remove(row_field) {
+        // First pass: probe every string cell. If any value in a column triggers a
+        // value-level PII match, the whole column is promoted — all rows will be
+        // force-redacted regardless of whether their individual values match.
+        let mut promoted: HashMap<usize, String> = HashMap::new();
+        for row in &rows {
+            if let Value::Array(cells) = row {
+                for (i, cell) in cells.iter().enumerate() {
+                    if promoted.contains_key(&i) {
+                        continue;
+                    }
+                    let col_lower = col_names.get(i).map(|n| n.to_lowercase());
+                    if col_lower
+                        .as_deref()
+                        .map(|k| effective_allowlist.iter().any(|a| a == k))
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    if let Value::String(s) = cell {
+                        if let Some(pii_type) = probe_value_pii(s, patterns) {
+                            promoted.insert(i, pii_type);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Second pass: redact. Promoted columns are force-redacted for every row;
+        // non-promoted columns go through the normal per-value walk.
         let new_rows: Vec<Value> = rows
             .into_iter()
             .map(|row| {
@@ -278,6 +339,11 @@ fn redact_columnar(
                             .enumerate()
                             .map(|(i, cell)| {
                                 let col_name = col_names.get(i).map(String::as_str);
+                                if let Some(pii_type) = promoted.get(&i) {
+                                    if let Value::String(s) = &cell {
+                                        return do_redact(pii_type, s, config, summary);
+                                    }
+                                }
                                 walk(
                                     cell,
                                     col_name,
@@ -292,7 +358,6 @@ fn redact_columnar(
                             .collect(),
                     )
                 } else {
-                    // Non-array row: walk without column context
                     walk(
                         row,
                         None,
@@ -373,22 +438,96 @@ fn walk(
                 .collect();
             Value::Object(new_map)
         }
-        Value::Array(arr) => Value::Array(
-            arr.into_iter()
-                .map(|v| {
-                    walk(
-                        v,
-                        key,
-                        plan,
-                        config,
-                        patterns,
-                        effective_names,
-                        effective_allowlist,
-                        summary,
-                    )
-                })
-                .collect(),
-        ),
+        Value::Array(arr) => {
+            // For arrays of objects (record sets), apply two-pass column promotion:
+            // if any object's value for a key triggers a value-level PII match, that
+            // key is promoted and all objects' values for it are force-redacted.
+            let all_objects = arr.len() > 1 && arr.iter().all(|v| matches!(v, Value::Object(_)));
+            if all_objects {
+                // First pass: probe each key's values across all objects.
+                let mut promoted: HashMap<String, String> = HashMap::new();
+                for item in &arr {
+                    if let Value::Object(map) = item {
+                        for (k, v) in map {
+                            if promoted.contains_key(k) {
+                                continue;
+                            }
+                            let k_lower = k.to_lowercase();
+                            if effective_allowlist.iter().any(|a| a == &k_lower) {
+                                continue;
+                            }
+                            if let Value::String(s) = v {
+                                if let Some(pii_type) = probe_value_pii(s, patterns) {
+                                    promoted.insert(k.clone(), pii_type);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Second pass: redact with promotion.
+                Value::Array(
+                    arr.into_iter()
+                        .map(|item| {
+                            if let Value::Object(map) = item {
+                                Value::Object(
+                                    map.into_iter()
+                                        .map(|(k, v)| {
+                                            if let Some(pii_type) = promoted.get(&k) {
+                                                if let Value::String(s) = &v {
+                                                    return (
+                                                        k,
+                                                        do_redact(pii_type, s, config, summary),
+                                                    );
+                                                }
+                                            }
+                                            let new_v = walk(
+                                                v,
+                                                Some(k.as_str()),
+                                                plan,
+                                                config,
+                                                patterns,
+                                                effective_names,
+                                                effective_allowlist,
+                                                summary,
+                                            );
+                                            (k, new_v)
+                                        })
+                                        .collect(),
+                                )
+                            } else {
+                                walk(
+                                    item,
+                                    key,
+                                    plan,
+                                    config,
+                                    patterns,
+                                    effective_names,
+                                    effective_allowlist,
+                                    summary,
+                                )
+                            }
+                        })
+                        .collect(),
+                )
+            } else {
+                Value::Array(
+                    arr.into_iter()
+                        .map(|v| {
+                            walk(
+                                v,
+                                key,
+                                plan,
+                                config,
+                                patterns,
+                                effective_names,
+                                effective_allowlist,
+                                summary,
+                            )
+                        })
+                        .collect(),
+                )
+            }
+        }
         other => other,
     }
 }
@@ -418,58 +557,59 @@ fn scan_string(
     let key_lower = key.map(|k| k.to_lowercase());
 
     // Allowlist check: if the column name is explicitly allowlisted, skip all
-    // name-based redaction steps (1–3). Value-based checks (Luhn, regex) still apply.
+    // redaction — both name-based (steps 1–3) and value-based (steps 4–6).
+    // The user has explicitly declared this column safe; we honour that fully.
     let is_allowlisted = key_lower
         .as_deref()
         .map(|k| effective_allowlist.iter().any(|a| a == k))
         .unwrap_or(false);
 
-    if !is_allowlisted {
-        // 1. Gate 1 forced columns (keys are pre-lowercased by Gate 1).
-        if let Some(ref k) = key_lower {
-            if let Some(type_label) = plan.forced_columns.get(k.as_str()) {
-                if vb {
-                    eprintln!(
-                        "[gate] field {:?} → REDACTED (step: forced_column, type: {})",
-                        kname, type_label
-                    );
-                }
-                return do_redact(type_label, &s, config, summary);
-            }
+    if is_allowlisted {
+        if vb {
+            eprintln!("[gate] field {:?} → skipped (allowlisted)", kname);
         }
+        return Value::String(s);
+    }
 
-        // 2. Token-based column classification — catches camelCase, synonyms, etc.
-        //    Force-redacts any value under a PII-named key, regardless of content.
-        if let Some(k) = key {
-            if let Some(pii_type) = classify_column(k) {
-                if vb {
-                    eprintln!(
-                        "[gate] field {:?} → REDACTED (step: column_classify, type: {})",
-                        kname, pii_type
-                    );
-                }
-                return do_redact(pii_type, &s, config, summary);
+    // 1. Gate 1 forced columns (keys are pre-lowercased by Gate 1).
+    if let Some(ref k) = key_lower {
+        if let Some(type_label) = plan.forced_columns.get(k.as_str()) {
+            if vb {
+                eprintln!(
+                    "[gate] field {:?} → REDACTED (step: forced_column, type: {})",
+                    kname, type_label
+                );
             }
+            return do_redact(type_label, &s, config, summary);
         }
+    }
 
-        // 3. Exact match against the effective column-name list.
-        //    Covers user-supplied column names not handled by the synonym table.
-        if let Some(ref k) = key_lower {
-            if effective_names.iter().any(|n| n == k) {
-                if vb {
-                    eprintln!(
-                        "[gate] field {:?} → REDACTED (step: column_name_exact, type: {})",
-                        kname, k
-                    );
-                }
-                return do_redact(k.as_str(), &s, config, summary);
+    // 2. Token-based column classification — catches camelCase, synonyms, etc.
+    //    Force-redacts any value under a PII-named key, regardless of content.
+    if let Some(k) = key {
+        if let Some(pii_type) = classify_column(k) {
+            if vb {
+                eprintln!(
+                    "[gate] field {:?} → REDACTED (step: column_classify, type: {})",
+                    kname, pii_type
+                );
             }
+            return do_redact(pii_type, &s, config, summary);
         }
-    } else if vb {
-        eprintln!(
-            "[gate] field {:?} → skipping name-based checks (allowlisted)",
-            kname
-        );
+    }
+
+    // 3. Exact match against the effective column-name list.
+    //    Covers user-supplied column names not handled by the synonym table.
+    if let Some(ref k) = key_lower {
+        if effective_names.iter().any(|n| n == k) {
+            if vb {
+                eprintln!(
+                    "[gate] field {:?} → REDACTED (step: column_name_exact, type: {})",
+                    kname, k
+                );
+            }
+            return do_redact(k.as_str(), &s, config, summary);
+        }
     }
 
     // 4. JSONB: if the value is a serialised JSON object or array, scan it recursively.
@@ -575,46 +715,41 @@ fn scan_string(
     // "+ 64 022 083 1619" or "+6 40220831619" collapse to a canonical form.
     // The original `s` is still used for redaction output and all other steps.
     let s_compact = s.replace(|c: char| c.is_ascii_whitespace(), "");
-    // Short-circuit on the first match whose confidence already clears the threshold —
-    // no need to continue scanning once we know we'll redact.
-    let mut best: Option<(&str, f32)> = None;
+    // Any pattern match → redact. The threshold is a warn gate only: matches below it
+    // are redacted and a warning is added so the user knows confidence was low.
+    // False positives should be addressed via column_allowlist, not by passing PII through.
     for p in patterns {
         if p.regex.is_match(&s_compact) {
             let score = p.confidence;
-            if score >= config.confidence_threshold {
+            let low_confidence = score < config.confidence_threshold;
+            if low_confidence {
                 if vb {
                     eprintln!(
-                        "[gate] field {:?} → REDACTED (step: regex, pattern: {}, score: {:.2})",
+                        "[gate] field {:?} → REDACTED (step: regex, pattern: {}, score: {:.2} < threshold: {:.2}, low-confidence)",
                         kname,
                         p.name.as_str(),
-                        score
+                        score,
+                        config.confidence_threshold
                     );
                 }
-                return do_redact(p.name.as_str(), &s, config, summary);
+                summary.warnings.push(format!(
+                    "low-confidence match: key={} pattern={} score={:.2}",
+                    key.unwrap_or("?"),
+                    p.name.as_str(),
+                    score,
+                ));
+            } else if vb {
+                eprintln!(
+                    "[gate] field {:?} → REDACTED (step: regex, pattern: {}, score: {:.2})",
+                    kname,
+                    p.name.as_str(),
+                    score
+                );
             }
-            if best.map(|(_, b)| score > b).unwrap_or(true) {
-                best = Some((p.name.as_str(), score));
-            }
+            return do_redact(p.name.as_str(), &s, config, summary);
         }
     }
-    // No above-threshold match found; check if the best below-threshold match should warn.
-    if let Some((name, score)) = best {
-        if vb {
-            eprintln!(
-                "[gate] field {:?} → warned (step: regex, pattern: {}, score: {:.2} < threshold: {:.2})",
-                kname,
-                name,
-                score,
-                config.confidence_threshold
-            );
-        }
-        summary.warnings.push(format!(
-            "low-confidence match: key={} pattern={} score={:.2}",
-            key.unwrap_or("?"),
-            name,
-            score,
-        ));
-    } else if vb {
+    if vb {
         eprintln!("[gate] field {:?} → passed (no match)", kname);
     }
 
@@ -860,17 +995,19 @@ mod tests {
         assert!(warnings[0].as_str().unwrap().contains("wildcard_policy"));
     }
 
-    // ── 8. Low-confidence match: warned but not redacted ─────────────────────
+    // ── 8. Low-confidence match: redacted with warning ───────────────────────
 
     #[test]
-    fn low_confidence_phone_in_generic_column_is_warned_not_redacted() {
-        // phone base confidence = 0.70; default threshold = 0.80; "notes" is not a PII column.
+    fn low_confidence_phone_in_generic_column_is_redacted_with_warning() {
+        // phone base confidence = 0.70; below the 0.80 threshold — value is still
+        // redacted (fail-safe) and a warning is emitted so the user can allowlist if needed.
         let input = json!({"notes": "555-123-4567"});
         let out = redact(input, &plan(), &cfg());
-        assert_eq!(out["notes"], "555-123-4567");
-        assert_eq!(out["_gate_summary"]["redacted"], 0);
+        assert_eq!(out["notes"], "[PII:phone]");
+        assert_eq!(out["_gate_summary"]["redacted"], 1);
         let warnings = out["_gate_summary"]["warnings"].as_array().unwrap();
         assert!(!warnings.is_empty(), "expected a low-confidence warning");
+        assert!(warnings[0].as_str().unwrap().contains("low-confidence"));
     }
 
     // ── 9. Luhn-pass in non-PII column ───────────────────────────────────────
@@ -890,14 +1027,17 @@ mod tests {
         assert_eq!(out["ref"], "[PII:credit_card]");
     }
 
-    // ── 10. Luhn-fail: 16-digit non-card string not redacted ─────────────────
+    // ── 10. Luhn-fail: 16-digit string still caught by credit_card regex ────────
 
     #[test]
-    fn luhn_invalid_16_digit_string_passes_through() {
-        // 1234567890123456 fails Luhn and has no other pattern match.
+    fn luhn_invalid_16_digit_string_redacted_with_warning() {
+        // 1234567890123456 fails the Luhn check but matches \d{13,16} at 0.65 (below
+        // threshold). Under fail-safe policy it is still redacted; a warning is emitted.
         let input = json!({"order_id": "1234567890123456"});
         let out = redact(input, &plan(), &cfg());
-        assert_eq!(out["order_id"], "1234567890123456");
+        assert_eq!(out["order_id"], "[PII:credit_card]");
+        let warnings = out["_gate_summary"]["warnings"].as_array().unwrap();
+        assert!(!warnings.is_empty(), "expected a low-confidence warning");
     }
 
     // ── 11. Idempotency ───────────────────────────────────────────────────────
@@ -1314,21 +1454,24 @@ mod tests {
     }
 
     #[test]
-    fn allowlisted_column_still_redacts_luhn_value() {
-        // Even if the column is allowlisted, a Luhn-valid CC number must still be redacted.
+    fn allowlisted_column_passes_through_entirely() {
+        // Allowlisted columns skip ALL redaction — both name-based and value-based.
+        // The user has explicitly declared the column safe; honour it fully so that
+        // 'gate allowlist add <col>' actually suppresses false-positive redactions.
         let config = cfg_allowlist(&["bank_code"]);
         let input = json!({"bank_code": "4111111111111111"});
         let out = redact(input, &plan(), &config);
-        assert_eq!(out["bank_code"], "[PII:credit_card]");
+        assert_eq!(out["bank_code"], "4111111111111111");
+        assert_eq!(out["_gate_summary"]["redacted"], 0);
     }
 
     #[test]
-    fn allowlisted_column_still_redacts_regex_match() {
-        // A high-confidence SSN in an allowlisted column must still be caught by regex.
+    fn allowlisted_column_passes_through_regex_match() {
         let config = cfg_allowlist(&["ref_code"]);
         let input = json!({"ref_code": "123-45-6789"});
         let out = redact(input, &plan(), &config);
-        assert_eq!(out["ref_code"], "[PII:ssn]");
+        assert_eq!(out["ref_code"], "123-45-6789");
+        assert_eq!(out["_gate_summary"]["redacted"], 0);
     }
 
     #[test]
@@ -1517,6 +1660,46 @@ mod tests {
     }
 
     #[test]
+    fn columnar_column_promotion_redacts_all_rows_when_any_value_matches() {
+        // "ref" is a generic key — not in any PII synonym list.
+        // Row 0's value matches the passport regex; rows 1 and 2 don't.
+        // After first-pass column promotion, all three rows must be redacted.
+        let input = json!({
+            "columns": ["name", "ref"],
+            "rows": [
+                ["Alice", "AB123456"],   // "ref" matches passport regex
+                ["Bob",   "ACME-007"],   // "ref" does not match
+                ["Carol", "REF-99"]      // "ref" does not match
+            ]
+        });
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["rows"][0][1], "[PII:passport]");
+        assert_eq!(out["rows"][1][1], "[PII:passport]");
+        assert_eq!(out["rows"][2][1], "[PII:passport]");
+        assert_eq!(out["rows"][0][0], "Alice"); // non-PII column untouched
+        assert_eq!(out["_gate_summary"]["redacted"], 3);
+    }
+
+    #[test]
+    fn array_of_objects_column_promotion_redacts_all_rows() {
+        // Array-of-objects shape: "nub" is a generic key. Row 1's value matches the
+        // phone pattern; after promotion rows 0 and 2 must also be redacted.
+        let input = json!({
+            "data": [
+                {"n": "gary1", "nub": "123"},
+                {"n": "gary2", "nub": "555-123-4567"},
+                {"n": "gary3", "nub": "123"}
+            ]
+        });
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["data"][0]["nub"], "[PII:phone]");
+        assert_eq!(out["data"][1]["nub"], "[PII:phone]");
+        assert_eq!(out["data"][2]["nub"], "[PII:phone]");
+        assert_eq!(out["data"][0]["n"], "gary1");
+        assert_eq!(out["_gate_summary"]["redacted"], 3);
+    }
+
+    #[test]
     fn plain_object_not_mistaken_for_columnar() {
         // {"name": "gary"} has no col_field/row_field pair — must go through normal Object walk.
         let input = json!({"name": "gary"});
@@ -1605,11 +1788,14 @@ mod tests {
     }
 
     #[test]
-    fn random_11digit_not_redacted() {
-        // 11-digit number that fails ABN mod-89 checksum
+    fn random_11digit_redacted_with_warning() {
+        // 11-digit number that fails ABN mod-89 checksum but matches the US phone
+        // pattern at 0.70 (below threshold). Redacted with a low-confidence warning.
         let input = json!({"ref": "12345678901"});
         let out = redact(input, &plan(), &cfg());
-        assert_eq!(out["ref"], "12345678901");
+        assert_eq!(out["ref"], "[PII:phone]");
+        let warnings = out["_gate_summary"]["warnings"].as_array().unwrap();
+        assert!(!warnings.is_empty(), "expected a low-confidence warning");
     }
 
     #[test]

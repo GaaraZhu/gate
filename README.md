@@ -70,9 +70,9 @@ Risk level is weighted by category sensitivity — one SSN column matters more t
 | **Elevated** | Contact, Names, Date of birth, Location of birth, Family & relationships, Employment | **HIGH** if >5% of schema; **CRITICAL** if >25% |
 | **Standard** | Address & location, Online & technical, Demographics | **HIGH** if >25% of schema |
 
-> **Note:** `gate scan` detects PII by column name only. A LOW result means your column names look clean — it does not mean the data is safe. Gate 2 additionally inspects values at query time, catching PII in free-text, JSON, and ambiguously-named columns that scan cannot see.
+> **Note:** `gate scan` detects PII by column name only. A LOW result means your column names look clean — it does not mean the data is safe. Gate 2 additionally inspects values at query time, catching PII in free-text, JSON, and ambiguously-named columns that scan cannot see. In multi-row results, if any value in a column matches a PII pattern, the entire column is promoted and all rows are redacted — not just the matching row.
 
-For false positives (e.g. `city` in a `products` table), run `gate scan --review` to triage interactively and add columns to the allowlist. Allowlisted columns skip **name-based** redaction only — Gate 2 still checks their values against regex patterns and the Luhn algorithm. Manage the list directly with `gate allowlist add/remove/list`.
+For false positives (e.g. `city` in a `products` table), run `gate scan --review` to triage interactively and add columns to the allowlist. Allowlisted columns skip **all** redaction — both name-based and value-based. Only add a column to the allowlist when you are certain it contains no PII. Low-confidence pattern matches (below `confidence_threshold`) are redacted *and* flagged with a warning in `_gate_summary`; add the column to `column_allowlist` to suppress. Manage the list directly with `gate allowlist add/remove/list`.
 
 ## Quickstart
 
@@ -204,6 +204,8 @@ With `hash_values: true` in config, each placeholder gains an 8-char hex suffix 
 
 `_gate_summary` reports a single response. `gate retro` aggregates across all of them — total queries seen, PII fields redacted, hit rate, plus a breakdown by tool and PII category. Useful for periodic audits and for confirming the boundary is doing real work.
 
+If any query produced a low-confidence redaction, `gate retro` surfaces a **Low-confidence redactions** section listing each unique warned column and the exact `gate allowlist add <col>` command to suppress it. Once a column is added to the allowlist it disappears from this section automatically.
+
 ![gate retro output](assets/retro.jpg)
 
 Stats are collected by default and written to a local JSONL log on disk — they never leave your machine. Disable with `stats.enabled: false` in config.
@@ -254,7 +256,7 @@ The ones you'll use most:
 | `gate config` | Create and edit the YAML config |
 | `gate scan` | PII risk report across your schema |
 | `gate allowlist add/remove/list` | Manage column-name false positives |
-| `gate retro` | Protection retrospective — total queries & PII fields redacted, breakdown by tool and PII type/category, hit rate with visual progress bar |
+| `gate retro` | Protection retrospective — total queries & PII fields redacted, breakdown by tool and PII type/category, hit rate with visual progress bar, and low-confidence warnings with allowlist hints |
 | `gate enable` / `gate disable` | Toggle redaction without uninstalling |
 | `gate validate` | Check config for errors before the first session |
 | `gate protect` / `gate unprotect` *(Unix only)* | Transfer config ownership to root |

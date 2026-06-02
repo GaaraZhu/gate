@@ -168,6 +168,7 @@ pub fn run(args: Vec<String>, verbose: bool) {
             redact_stats.total,
             overhead_us,
             redact_stats.type_counts,
+            redact_stats.warnings,
         );
         let _ = stats::record(&event);
     }
@@ -215,6 +216,7 @@ fn redact_stdin(verbose: bool, config: &Config) {
             redact_stats.total,
             overhead_us,
             redact_stats.type_counts,
+            redact_stats.warnings,
         );
         let _ = stats::record(&event);
     }

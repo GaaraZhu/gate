@@ -119,6 +119,7 @@ pub fn redact_tools_call_response(
                         rs.total,
                         overhead_us,
                         rs.type_counts,
+                        rs.warnings,
                     );
                     let _ = stats::record(&event);
                 }

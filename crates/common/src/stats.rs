@@ -36,6 +36,10 @@ pub struct Event {
     pub overhead_us: u64,
     /// Per-PII-type counts, e.g. `{"email": 23, "ssn": 8}`.
     pub types: HashMap<String, usize>,
+    /// Low-confidence match warnings recorded during this event.
+    /// `#[serde(default)]` keeps events written before this field parseable.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 impl Event {
@@ -46,6 +50,7 @@ impl Event {
         fields_redacted: usize,
         overhead_us: u64,
         types: HashMap<String, usize>,
+        warnings: Vec<String>,
     ) -> Self {
         Self {
             ts: now_millis(),
@@ -54,6 +59,7 @@ impl Event {
             fields_redacted,
             overhead_us,
             types,
+            warnings,
         }
     }
 }
@@ -220,6 +226,7 @@ mod tests {
             total,
             42,
             types.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            vec![],
         )
     }
 
@@ -250,7 +257,15 @@ mod tests {
     #[test]
     fn record_roundtrips_overhead_us() {
         with_stats_path(|path| {
-            record(&Event::now("bash", "tkpsql", 1, 1234, HashMap::new())).unwrap();
+            record(&Event::now(
+                "bash",
+                "tkpsql",
+                1,
+                1234,
+                HashMap::new(),
+                vec![],
+            ))
+            .unwrap();
             let contents = std::fs::read_to_string(path).unwrap();
             let parsed: Event = serde_json::from_str(contents.trim()).unwrap();
             assert_eq!(parsed.overhead_us, 1234);

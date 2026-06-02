@@ -24,7 +24,7 @@ Config lives at `~/.config/gate/config.yaml` (override with `GATE_CONFIG`).
 | **Financial** | `bank_account`, `account_number`, `iban`, `swift`, `routing_number`, `bsb`, `credit_card` / `card_number`, `cvv` / `cvc`, `expiry` |
 | **Employment** | `salary`, `wage`, `job_title` |
 | **Health & medical** | `medical`, `health`, `diagnosis`, `prescription`, `disability`, `vaccination`, `vaccine`, `npi`, `medicare` / `medicare_number`, `nhi` / `nhi_number` |
-| **Online & technical** | `username` / `user_name`, `ip_address`, `mac_address`, `auth_token`, `user_id`, `device_id`, `session_id`, `cookie_id`, `advertising_id`, `employee_id`, `staff_id`, `student_id`, `manager_id`, and any `<entity>_id` / `<entity>_number` where entity is: employee, staff, student, member, client, customer, consumer, cust, crm, person, manager, user, device, session, cookie, advertising, external. **Note:** if an `<entity>_id` column is a plain internal primary key (auto-increment integer or UUID) that the agent needs for joining or filtering, add it to `column_allowlist` — value-level scanning (Luhn, regex) still applies. Alternatively, enable `hash_values` so the agent can correlate records across rows without seeing the raw value. |
+| **Online & technical** | `username` / `user_name`, `ip_address`, `mac_address`, `auth_token`, `user_id`, `device_id`, `session_id`, `cookie_id`, `advertising_id`, `employee_id`, `staff_id`, `student_id`, `manager_id`, and any `<entity>_id` / `<entity>_number` where entity is: employee, staff, student, member, client, customer, consumer, cust, crm, person, manager, user, device, session, cookie, advertising, external. **Note:** if an `<entity>_id` column is a plain internal primary key (auto-increment integer or UUID) that the agent needs for joining or filtering, add it to `column_allowlist` to suppress all redaction for that column. Alternatively, enable `hash_values` so the agent can correlate records across rows without seeing the raw value. |
 | **Biometric** | `biometric`, `fingerprint`, `voiceprint`, `retina`, `face_scan` |
 | **Family & relationships** | `next_of_kin`, `emergency_contact`, `spouse_name`, `parent_name`, `guardian_name`, `children_names` |
 
@@ -39,7 +39,7 @@ Two config knobs let you correct Gate's built-in defaults in either direction:
 | **Value scanning** | Still applies | Still applies (Luhn, regex) |
 | **Typical case** | Schema-specific PII column not in the built-in table (e.g. `identification_number`) | Internal primary key the agent needs for joining (e.g. `employee_id`) |
 
-Neither knob disables value-level scanning — a Luhn-valid card number or SSN-shaped string in an allowlisted column is still redacted.
+`column_allowlist` skips **all** redaction for that column — both name-based and value-based. Use it only when you are certain the column contains no PII. `column_denylist` has no effect on value-level scanning.
 
 ### Value-based patterns
 
@@ -50,7 +50,9 @@ Neither knob disables value-level scanning — a Luhn-valid card number or SSN-s
 | Phone number | Regex (confidence 0.70) | `+1 555-123-4567`, `(555) 123-4567`, `555.123.4567` |
 | Credit / debit card | Regex + [Luhn algorithm](https://en.wikipedia.org/wiki/Luhn_algorithm) (confidence 1.0) | `4111 1111 1111 1111`, `5500-0055-5555-5559` |
 
-When a column name also matches the denylist, Gate 2 adds a 0.15 confidence boost to any value hit in that column, pushing borderline matches over the redaction threshold.
+Every value that matches a pattern is redacted — regardless of confidence score. The `confidence_threshold` controls whether a warning is also added to `_gate_summary`: matches below the threshold are redacted *and* warned (so you can identify false positives to allowlist). Matches above the threshold are redacted silently.
+
+When a column name also matches the denylist, Gate 2 adds a 0.15 confidence boost to the score, which affects whether a warning is emitted but not whether redaction occurs.
 
 Add your own columns or patterns in the config schema below.
 
@@ -59,14 +61,19 @@ Add your own columns or patterns in the config schema below.
 Gate 2 scans every string field through two independent checks:
 
 1. **Column-name classification** — the column name is tokenised and matched against a built-in synonym table. A match forces redaction regardless of the value.
-2. **Value-level patterns** — the value is tested against regex patterns (email, SSN, phone, credit card) and a Luhn checksum (credit/debit cards).
+2. **Value-level patterns** — the value is tested against regex patterns (email, SSN, phone, credit card) and a Luhn checksum (credit/debit cards). Any match redacts the value; matches below `confidence_threshold` also emit a warning.
 
-Both checks must fail for a value to pass through unredacted. For well-known formats like email addresses and credit card numbers, the value-level check is a reliable backstop. But for government-issued ID numbers, document numbers, and licence numbers, **neither check fires**:
+At least one check must fire for a value to be redacted. For well-known formats like email addresses and credit card numbers, the value-level check is a reliable backstop.
+
+**Column promotion** — in multi-row result sets (both the `columns`/`rows` columnar shape and arrays of objects), if *any* value in a column triggers a value-level match, that column is promoted: every value across all rows is force-redacted with the detected type, even rows whose individual values don't match. For example, if a `ref` column contains passport numbers for most records but plain strings for a few, all values in `ref` are redacted once any one of them is identified as a passport.
+
+But for government-issued ID numbers, document numbers, and licence numbers, **neither check fires** if:
 
 - The value looks like an opaque alphanumeric string (`AB123456`, `123 456 782`, `P1234567A`) — no regex matches it.
 - If the column is named `value`, `data`, or `content`, the column-name check also produces no match.
+- No row in the result set has a value that matches any pattern — so column promotion never triggers.
 
-The result is a silent pass-through: Gate receives the row, runs both checks, finds nothing, and returns the raw ID number to the agent unredacted. There is no warning in `_gate_summary` because Gate has no way to know a PII value was present.
+The result is a silent pass-through with no warning in `_gate_summary` because Gate has no way to know a PII value was present.
 
 **If the column name carries no semantic signal, that layer is bypassed entirely**, and for ID-type values the value layer offers no fallback. A column named `value` in an EAV (entity–attribute–value) table is a blind spot.
 
@@ -132,7 +139,7 @@ pii:
   #   - secret_token
 
   # False-positive fix: columns Gate redacts that shouldn't be.
-  # Name-based checks are skipped; value-level scanning (Luhn, regex) still applies.
+  # All redaction is skipped for allowlisted columns (name-based and value-based).
   # column_allowlist:
   #   - employee_id   # internal auto-increment PK, safe to expose
   #   - city          # not sensitive in this schema
@@ -147,7 +154,9 @@ pii:
   # Final score is capped at 1.0.
   column_name_boost: 0.15
 
-  # Values matched below this threshold are flagged in _gate_summary but not redacted.
+  # Values matched below this threshold are redacted AND flagged with a low-confidence
+  # warning in _gate_summary. Values above the threshold are redacted silently.
+  # Use column_allowlist to suppress false-positive redactions.
   confidence_threshold: 0.8
 
   # Redaction placeholder template; {type} is replaced with the pattern name.

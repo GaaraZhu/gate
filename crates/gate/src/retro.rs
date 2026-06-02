@@ -61,7 +61,8 @@ pub fn run() {
         return;
     }
 
-    print_report(&summary);
+    let allowlist = config.pii.effective_column_allowlist();
+    print_report(&summary, &allowlist);
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -82,6 +83,8 @@ struct Summary {
     /// written before the field existed read as 0 and are skipped so they
     /// don't pull the percentiles toward zero.
     overhead_us: Vec<u64>,
+    /// Unique low-confidence warning strings seen across all events.
+    warnings: std::collections::BTreeSet<String>,
     malformed: usize,
 }
 
@@ -103,6 +106,9 @@ impl Summary {
         }
         for (k, v) in ev.types {
             *self.type_counts.entry(k).or_insert(0) += v;
+        }
+        for w in ev.warnings {
+            self.warnings.insert(w);
         }
     }
 }
@@ -126,7 +132,7 @@ fn print_empty() {
     );
 }
 
-fn print_report(s: &Summary) {
+fn print_report(s: &Summary, allowlist: &[String]) {
     let (hdr, reset, dim) = if crate::color::supports_color() {
         ("\x1b[1;96m", "\x1b[0m", "\x1b[2m")
     } else {
@@ -271,6 +277,38 @@ fn print_report(s: &Summary) {
     );
     println!();
 
+    // Filter out warnings for columns already in the allowlist — the user has
+    // already acted on those; showing them again would just be noise.
+    let pending_warnings: Vec<&String> = s
+        .warnings
+        .iter()
+        .filter(|w| {
+            let key = w
+                .split("key=")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+                .unwrap_or("?");
+            !allowlist.iter().any(|a| a == key)
+        })
+        .collect();
+
+    if !pending_warnings.is_empty() {
+        println!("{hdr}Low-confidence redactions — review for false positives{reset}");
+        println!("{}", "─".repeat(TABLE_WIDTH));
+        for w in pending_warnings {
+            let key = w
+                .split("key=")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+                .unwrap_or("?");
+            println!("  {w}");
+            println!(
+                "  {dim}→ run 'gate allowlist add {key}' to suppress if false positive{reset}"
+            );
+            println!();
+        }
+    }
+
     if s.malformed > 0 {
         eprintln!(
             "[gate retro] note: skipped {} malformed line(s) in stats log",
@@ -296,6 +334,7 @@ mod tests {
             fields_redacted: fields,
             overhead_us: 0,
             types: m,
+            warnings: vec![],
         }
     }
 
@@ -307,6 +346,7 @@ mod tests {
             fields_redacted: fields,
             overhead_us,
             types: HashMap::new(),
+            warnings: vec![],
         }
     }
 

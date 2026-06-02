@@ -7,6 +7,10 @@
 
 ### ✨ Improvements
 
+- **Any pattern match now redacts** — `confidence_threshold` is now a warn gate only; values matched below the threshold are redacted *and* flagged with a `low-confidence` warning rather than passed through. Use `column_allowlist` to suppress false positives.
+- **`column_allowlist` now skips all redaction** — previously only name-based checks were skipped; value-level scanning (Luhn, regex) still fired. Now allowlisted columns are fully trusted and pass through without any check.
+- **`gate retro` low-confidence warnings** — surfaces a deduplicated list of low-confidence redactions with the exact `gate allowlist add <col>` command to suppress each one. Columns already in the allowlist are filtered out automatically.
+- **Column promotion** — in multi-row results (both `columns`/`rows` columnar shape and arrays of objects), if any value in a column triggers a value-level PII match, all values in that column are force-redacted across all rows, not just the matching row.
 - Add AU/NZ landline patterns: `+61 [2378]`/`0[2378]` (NSW/ACT, VIC/TAS, QLD, WA/SA/NT) and `+64 [34679]`/`0[34679]` (South Island, Wellington, Taranaki, Waikato, Auckland)
 - Split AU/NZ phone confidence: international-prefix numbers (`+61`/`+64`) score 0.85 and auto-redact in any column; local-format numbers score 0.70 and require a PII-named column
 - Add phone column synonyms: `phnumber`, `ph_number`, `cell`, `cell_number`
