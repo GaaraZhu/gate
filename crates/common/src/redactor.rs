@@ -571,11 +571,15 @@ fn scan_string(
 
     // 6. Regex pattern scan. column_name_boost is not applied here: any column
     //    whose name matched the denylist was already handled in steps 1–3.
+    // Match against a whitespace-stripped copy so that formatting variants like
+    // "+ 64 022 083 1619" or "+6 40220831619" collapse to a canonical form.
+    // The original `s` is still used for redaction output and all other steps.
+    let s_compact = s.replace(|c: char| c.is_ascii_whitespace(), "");
     // Short-circuit on the first match whose confidence already clears the threshold —
     // no need to continue scanning once we know we'll redact.
     let mut best: Option<(&str, f32)> = None;
     for p in patterns {
-        if p.regex.is_match(&s) {
+        if p.regex.is_match(&s_compact) {
             let score = p.confidence;
             if score >= config.confidence_threshold {
                 if vb {
@@ -940,6 +944,67 @@ mod tests {
         let out = redact(input, &plan(), &cfg());
         assert_eq!(out["mobile"], "[PII:phone]");
         assert_eq!(out["mail"], "[PII:email]");
+    }
+
+    #[test]
+    fn phnumber_key_with_nz_phone_is_redacted() {
+        // "phnumber" is a common abbreviated key; the NZ mobile value alone scores 0.70
+        // (below the 0.80 threshold), but the key synonym must force-redact it.
+        let input = json!({"name": "gary", "phnumber": "0220831619"});
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["phnumber"], "[PII:phone]");
+        assert_eq!(out["name"], "gary");
+    }
+
+    #[test]
+    fn nz_international_prefix_redacted_in_generic_column() {
+        // +64 is unambiguous (NZ country code) — value-layer confidence 0.85 clears the
+        // default 0.80 threshold, so redaction must happen even with a non-PII key name.
+        let input = json!({"name": "gary", "mber": "+64220831619"});
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["mber"], "[PII:phone]");
+        assert_eq!(out["name"], "gary");
+    }
+
+    #[test]
+    fn au_international_prefix_redacted_in_generic_column() {
+        let input = json!({"ref": "+61412345678"});
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["ref"], "[PII:phone]");
+    }
+
+    #[test]
+    fn au_landline_international_redacted_in_generic_column() {
+        // +61 2 9171 1868 is an AU landline (Sydney); +61 is unambiguous so value-layer
+        // confidence 0.85 clears the threshold even with a non-PII key like "mber".
+        let input = json!({"name": "gary", "mber": "+61291711868"});
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["mber"], "[PII:phone]");
+        assert_eq!(out["name"], "gary");
+    }
+
+    #[test]
+    fn nz_landline_international_redacted_in_generic_column() {
+        // +64 9 309 2677 is a NZ landline (Auckland); +64 is unambiguous.
+        let input = json!({"name": "gary", "mber": "+6493092677"});
+        let out = redact(input, &plan(), &cfg());
+        assert_eq!(out["mber"], "[PII:phone]");
+        assert_eq!(out["name"], "gary");
+    }
+
+    #[test]
+    fn spaced_international_prefix_caught_via_compaction() {
+        // Whitespace is stripped before regex matching, so "+" followed by spaces
+        // and digits in any position still resolves to the canonical form.
+        for val in &[
+            "+ 640220831619", // space after +
+            "+6 40220831619", // space mid-CC
+            "+64 0220831619", // space after CC
+        ] {
+            let input = json!({"mber": val});
+            let out = redact(input, &plan(), &cfg());
+            assert_eq!(out["mber"], "[PII:phone]", "expected redaction for {}", val);
+        }
     }
 
     #[test]

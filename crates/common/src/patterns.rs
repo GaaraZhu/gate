@@ -95,15 +95,55 @@ pub const BUILTIN_PATTERNS: &[BuiltinPattern] = &[
         confidence: 0.85,
     },
     BuiltinPattern {
-        // AU mobile: 04XX XXX XXX / +61 4XX XXX XXX
+        // AU mobile international: +61 4XX XXX XXX / +610 4XX... (stray leading zero after CC)
+        // +61 is unambiguous — high confidence even without a PII column name.
         name: "phone",
-        regex: r"\b(?:\+61[\s-]?|0)4\d{2}[\s-]?\d{3}[\s-]?\d{3}\b",
+        regex: r"\+61[\s-]?0?4\d{2}[\s-]?\d{3}[\s-]?\d{3}\b",
+        confidence: 0.85,
+    },
+    BuiltinPattern {
+        // AU landline international: +61 [2378] XXXX XXXX / +610 [2378]...
+        // area codes: 2=NSW/ACT, 3=VIC/TAS, 7=QLD, 8=WA/SA/NT.
+        name: "phone",
+        regex: r"\+61[\s-]?0?[2378][\s-]?\d{4}[\s-]?\d{4}\b",
+        confidence: 0.85,
+    },
+    BuiltinPattern {
+        // AU mobile local: 04XX XXX XXX — ambiguous without key context (low confidence).
+        name: "phone",
+        regex: r"\b04\d{2}[\s-]?\d{3}[\s-]?\d{3}\b",
         confidence: 0.70,
     },
     BuiltinPattern {
-        // NZ mobile: 02X XXX XXXX(X) / +64 2X XXX XXXX(X)
+        // AU landline local: 0[2378] XXXX XXXX — ambiguous without key context.
         name: "phone",
-        regex: r"\b(?:\+64[\s-]?|0)2\d[\s-]?\d{3}[\s-]?\d{4,5}\b",
+        regex: r"\b0[2378][\s-]?\d{4}[\s-]?\d{4}\b",
+        confidence: 0.70,
+    },
+    BuiltinPattern {
+        // NZ mobile international: +64 2X XXX XXXX(X) / +640 2X... (stray leading zero after CC)
+        // +64 is unambiguous — high confidence even without a PII column name.
+        name: "phone",
+        regex: r"\+64[\s-]?0?2\d[\s-]?\d{3}[\s-]?\d{4,5}\b",
+        confidence: 0.85,
+    },
+    BuiltinPattern {
+        // NZ landline international: +64 [34679] XXX XXXX / +640 [34679]...
+        // area codes: 3=South Island, 4=Wellington, 6=Taranaki/Hawke's Bay, 7=Waikato, 9=Auckland.
+        name: "phone",
+        regex: r"\+64[\s-]?0?[34679][\s-]?\d{3}[\s-]?\d{4}\b",
+        confidence: 0.85,
+    },
+    BuiltinPattern {
+        // NZ mobile local: 02X XXX XXXX(X) — ambiguous without key context (low confidence).
+        name: "phone",
+        regex: r"\b02\d[\s-]?\d{3}[\s-]?\d{4,5}\b",
+        confidence: 0.70,
+    },
+    BuiltinPattern {
+        // NZ landline local: 0[34679] XXX XXXX — ambiguous without key context.
+        name: "phone",
+        regex: r"\b0[34679][\s-]?\d{3}[\s-]?\d{4}\b",
         confidence: 0.70,
     },
     BuiltinPattern {
@@ -133,6 +173,9 @@ const TOKEN_SYNONYMS: &[(&str, &str)] = &[
     ("mobile", "phone"),
     ("tel", "phone"),
     ("fax", "phone"),
+    ("phnumber", "phone"),   // ph_number / phnumber
+    ("cellnumber", "phone"), // cell_number
+    ("cell", "phone"),
     // ── SSN ───────────────────────────────────────────────────────────────────
     ("ssn", "ssn"),
     ("socialsecuritynumber", "ssn"), // trigram: social_security_number
@@ -784,7 +827,7 @@ mod tests {
         ] {
             assert!(names.contains(expected), "missing builtin: {}", expected);
         }
-        assert_eq!(patterns.len(), 10);
+        assert_eq!(patterns.len(), 16);
     }
 
     #[test]
@@ -897,6 +940,76 @@ mod tests {
         let p = pattern("phone");
         for s in &["hello world", "not a number", "12345"] {
             assert!(!p.regex.is_match(s), "unexpected phone match: {}", s);
+        }
+    }
+
+    fn any_phone_matches(s: &str) -> bool {
+        CompiledPattern::from_builtins()
+            .into_iter()
+            .filter(|p| p.name == "phone")
+            .any(|p| p.regex.is_match(s))
+    }
+
+    #[test]
+    fn nz_mobile_variants_all_match() {
+        for num in &[
+            "0220831619",      // local format compact
+            "022 083 1619",    // local format spaced
+            "+64220831619",    // E.164 proper
+            "+64 22 083 1619", // E.164 spaced
+            "+640220831619",   // stray leading zero after CC (common mistake)
+        ] {
+            assert!(any_phone_matches(num), "expected NZ phone match: {}", num);
+        }
+    }
+
+    #[test]
+    fn au_mobile_variants_all_match() {
+        for num in &[
+            "0412345678",      // local compact
+            "0412 345 678",    // local spaced
+            "+61412345678",    // E.164 proper
+            "+61 412 345 678", // E.164 spaced
+            "+610412345678",   // stray leading zero
+        ] {
+            assert!(any_phone_matches(num), "expected AU phone match: {}", num);
+        }
+    }
+
+    #[test]
+    fn au_landline_variants_all_match() {
+        for num in &[
+            "+61291711868",    // NSW international compact
+            "+61 2 9171 1868", // NSW international spaced
+            "0291711868",      // NSW local compact
+            "02 9171 1868",    // NSW local spaced
+            "+61391711868",    // VIC international
+            "+61791711868",    // QLD international
+            "+61891711868",    // WA international
+        ] {
+            assert!(
+                any_phone_matches(num),
+                "expected AU landline match: {}",
+                num
+            );
+        }
+    }
+
+    #[test]
+    fn nz_landline_variants_all_match() {
+        for num in &[
+            "+6493092677",    // Auckland international compact
+            "+64 9 309 2677", // Auckland international spaced
+            "093092677",      // Auckland local compact
+            "09 309 2677",    // Auckland local spaced
+            "+6443092677",    // Wellington international
+            "+6433092677",    // South Island international
+        ] {
+            assert!(
+                any_phone_matches(num),
+                "expected NZ landline match: {}",
+                num
+            );
         }
     }
 
@@ -1014,6 +1127,9 @@ mod tests {
     fn classify_underscore_separated() {
         assert_eq!(classify_column("email_address"), Some("email"));
         assert_eq!(classify_column("phone_number"), Some("phone"));
+        assert_eq!(classify_column("ph_number"), Some("phone"));
+        assert_eq!(classify_column("phnumber"), Some("phone"));
+        assert_eq!(classify_column("cell_number"), Some("phone"));
         assert_eq!(classify_column("first_name"), Some("name"));
         assert_eq!(classify_column("last_name"), Some("name"));
         assert_eq!(classify_column("full_name"), Some("name"));

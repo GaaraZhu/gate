@@ -17,7 +17,7 @@ Config lives at `~/.config/gate/config.yaml` (override with `GATE_CONFIG`).
 | **Names** | `first_name`, `last_name`, `full_name`, `given_name`, `family_name`, `surname`, `preferred_name`, `middle_name`, `maiden_name`, `salutation`; `<entity>_name` where entity is one of: contact, customer, client, employee, patient, member, owner, recipient, sender, spouse, parent, guardian, manager, sibling, children |
 | **Demographics** | `gender`, `sex`, `nationality`, `citizenship` |
 | **Government IDs** | `passport`, `license` / `licence` / `driver_license_number` / `driver_licence_number`, `ssn` / `social_security_number`, `national_id`, `tax_number` / `tax_id` / `tax_file_number` / `ird_number` / `tfn`, `abn`, `visa_number`, `resident_id`, `immigration_id` |
-| **Contact** | `email` / `email_address` / `mail`, `phone` / `phone_number` / `mobile`, `fax` |
+| **Contact** | `email` / `email_address` / `mail`, `phone` / `phone_number` / `mobile` / `cell` / `cell_number` / `ph_number` / `phnumber`, `fax` |
 | **Date of birth** | `dob`, `birth`, `birthday`, `date_of_birth`, `birth_date`, `dateOfBirth` |
 | **Location of birth** | `birth_country`, `birth_place`, `birth_city`, `country_of_birth`, `place_of_birth`, `city_of_birth`, `state_of_birth` |
 | **Address & location** | `address` / `addr`, `street`, `postcode`, `zip`, `latitude`, `longitude`, `gps`, `coordinates` |

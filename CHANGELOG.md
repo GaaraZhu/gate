@@ -1,3 +1,16 @@
+## [Unreleased]
+
+### 🐛 Bug Fixes
+
+- Fix AU/NZ international phone numbers not matched when `+` is separated from digits by whitespace (e.g. `+ 640220831619`, `+6 40220831619`) — values are now whitespace-stripped before regex matching
+- Fix `+610`/`+640` (stray leading zero after country code) silently skipped by AU/NZ phone patterns
+
+### ✨ Improvements
+
+- Add AU/NZ landline patterns: `+61 [2378]`/`0[2378]` (NSW/ACT, VIC/TAS, QLD, WA/SA/NT) and `+64 [34679]`/`0[34679]` (South Island, Wellington, Taranaki, Waikato, Auckland)
+- Split AU/NZ phone confidence: international-prefix numbers (`+61`/`+64`) score 0.85 and auto-redact in any column; local-format numbers score 0.70 and require a PII-named column
+- Add phone column synonyms: `phnumber`, `ph_number`, `cell`, `cell_number`
+
 ## [0.8.7] - 2026-05-25
 
 ### 🚀 Features
