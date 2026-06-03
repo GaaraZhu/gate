@@ -5,8 +5,8 @@ use std::path::Path;
 
 pub fn run(show_path: bool, print_config: bool, init_only: bool) {
     let interactive = !show_path && !print_config && !init_only;
-    if interactive && is_agent_harness() {
-        exit_with_error("gate config: interactive mode is not available inside an agent harness");
+    if is_agent_harness() && (interactive || print_config) {
+        exit_with_error("gate config: not available inside an agent harness");
     }
     // Pre-check: if the config is protected, tell the user before launching an editor.
     #[cfg(unix)]
