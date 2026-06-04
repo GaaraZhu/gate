@@ -38,6 +38,21 @@ Most PII guardrails for AI agents are themselves LLMs — they send your data to
 
 The trade-off gate makes: rules can't catch PII in unstructured free-text prose. The [threat model](THREAT-MODEL.md) documents what gate doesn't cover.
 
+## Why not just mask at the source?
+
+Database-level masking is the right answer when you control the source. Gate fills the gap when you don't, and covers the paths masking can't reach.
+
+| | gate | Database masking |
+|---|---|---|
+| Requires DB admin access | ✅ No changes to the database | ❌ Needs column-level config by a DBA |
+| Works on vendor / external DBs | ✅ Wraps any JSON-returning tool | ❌ Only databases you administer |
+| Covers MCP and API tools | ✅ Any `tools/call` response | ❌ No masking concept at this layer |
+| Production data freshness | ✅ Works against live data | ❌ Static copies drift; DDM may lag |
+| Agent bypass resistance | ✅ Direct value exposure blocked in harness hook | ❌ Aggregate functions and CASE expressions can bypass DDM |
+| Known gaps | ✅ Documented | ❌ DDM gaps are often silent |
+
+They're complementary: if you have DDM configured, gate is the safety net for the paths and patterns DDM misses.
+
 ## Demo
 
 The demo walks through three steps:
