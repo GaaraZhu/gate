@@ -458,6 +458,17 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::fs;
+    use std::sync::Mutex;
+
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_home_var<F: FnOnce() -> T, T>(f: F, dir: &std::path::Path) -> T {
+        let _guard = HOME_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("HOME", dir) };
+        let result = f();
+        unsafe { std::env::remove_var("HOME") };
+        result
+    }
 
     fn tmp_settings(value: &Value) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -471,9 +482,7 @@ mod tests {
     #[test]
     fn plan_hook_none_when_file_missing() {
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("HOME", dir.path()) };
-        let result = plan_remove_hook("global");
-        unsafe { std::env::remove_var("HOME") };
+        let result = with_home_var(|| plan_remove_hook("global"), dir.path());
         assert!(result.is_none());
     }
 
@@ -489,9 +498,7 @@ mod tests {
             ]}
         });
         fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
-        unsafe { std::env::set_var("HOME", dir.path()) };
-        let result = plan_remove_hook("global");
-        unsafe { std::env::remove_var("HOME") };
+        let result = with_home_var(|| plan_remove_hook("global"), dir.path());
         assert!(result.is_none());
     }
 
@@ -507,9 +514,7 @@ mod tests {
             ]}
         });
         fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
-        unsafe { std::env::set_var("HOME", dir.path()) };
-        let result = plan_remove_hook("global");
-        unsafe { std::env::remove_var("HOME") };
+        let result = with_home_var(|| plan_remove_hook("global"), dir.path());
         assert!(matches!(result, Some(Action::Hook(_))));
     }
 
