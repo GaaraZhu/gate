@@ -69,7 +69,7 @@ gate 的取舍：规则无法捕捉非结构化自由文本中的 PII。[威胁�
 
 ## 扫描你的 schema
 
-在安装钩子之前，使用 `gate scan` 评估你的 schema 暴露了多少 PII。将一条 `TABLE_NAME, COLUMN_NAME` 查询通过管道传给它，gate 会针对每张表打印风险报告。`gate scan` 本身无需配置——如果你还没有创建配置，先运行 `gate config --init-only`。
+在安装钩子之前，使用 `gate scan` 评估你的 schema 暴露了多少 PII。将一条 `TABLE_NAME, COLUMN_NAME` 查询通过管道传给它，gate 会针对每张表打印风险报告。`gate scan` 本身无需配置。
 
 ```bash
 psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'public' ORDER BY TABLE_NAME, ORDINAL_POSITION" | gate scan
@@ -87,7 +87,7 @@ psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INF
 
 > **注意：** `gate scan` 仅按列名检测 PII。LOW 结果意味着你的列名看起来是干净的——但这并不代表数据本身是安全的。Gate 2 会在查询时额外检查字段值，捕捉自由文本、JSON 以及命名含糊的列中的 PII，这些是 scan 无法看到的。
 
-对于误报（例如 `products` 表中的 `city` 列），运行 `gate scan --review` 进行交互式甄别，并将相关列加入白名单。白名单中的列仅跳过**基于列名**的脱敏——Gate 2 仍会用正则模式和 Luhn 算法检查它们的值。也可以直接用 `gate allowlist add/remove/list` 管理该列表。
+对于误报（例如 `products` 表中的 `city` 列），运行 `gate scan --review` 进行交互式甄别，并将相关列加入白名单。白名单中的列会跳过**所有**脱敏——包括基于列名和基于字段值的检查。只在你确定列中不含 PII 时，才将其加入白名单。对于运行时误报，在会话结束后运行 `gate retro`——它会列出所有低置信度脱敏的列，并提供对应的 `gate allowlist add <col>` 命令供你直接执行。也可以直接用 `gate allowlist add/remove/list` 管理该列表。
 
 ## 快速上手
 
@@ -132,7 +132,7 @@ psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INF
    gate init --harness gemini
    ```
 
-   加上 `--scope project` 可进行仅项目级的安装。执行 `gate init` 后，重启你的 OpenCode、Cursor 或 Gemini CLI 会话以加载钩子。对于 Codex CLI，重启会话后，在 Trust & Permissions 界面中查看该钩子，将其标记为受信任并启用。对于 Copilot CLI，生成的 `.github/hooks/PreToolUse.json` 默认被 gitignore——每位开发者需在本地克隆中各自运行一次 `gate init --harness copilot-cli`。
+   加上 `--scope project` 可进行仅项目级的安装。执行 `gate init` 后，重启你的 OpenCode、Cursor 或 Gemini CLI 会话以加载钩子。对于 Codex CLI，重启会话后，在 Trust & Permissions 界面中查看该钩子，将其标记为受信任并启用。对于 Copilot CLI，请将 `.github/hooks/PreToolUse.json` 加入你的仓库的 `.gitignore`——每位开发者需在本地克隆中各自运行一次 `gate init --harness copilot-cli`。
 
 4. *（可选）* **注册 MCP 服务器代理**，使 `tools/call` 响应也经过 gate：
 
@@ -218,6 +218,8 @@ AI <───脱敏后的结果─────┘
 ## 防护回顾
 
 `_gate_summary` 报告的是单次响应。`gate retro` 会跨所有响应进行汇总——总查询数、已脱敏的 PII 字段数、命中率，以及按工具和 PII 类别的细分。适用于定期审计，以及确认这道边界确实在发挥作用。
+
+若任何查询产生了低置信度脱敏，`gate retro` 会显示一个**低置信度脱敏**部分，列出每个唯一警告列以及对应的 `gate allowlist add <col>` 命令供你直接抑制。将列加入白名单后，它会自动从该部分消失。
 
 ![gate retro 输出](assets/retro.jpg)
 

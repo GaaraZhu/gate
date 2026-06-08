@@ -87,7 +87,7 @@ Risk level is weighted by category sensitivity — one SSN column matters more t
 
 > **Note:** `gate scan` detects PII by column name only. A LOW result means your column names look clean — it does not mean the data is safe. Gate 2 additionally inspects values at query time, catching PII in free-text, JSON, and ambiguously-named columns that scan cannot see. In multi-row results, if any value in a column matches a PII pattern, the entire column is promoted and all rows are redacted — not just the matching row.
 
-For false positives (e.g. `city` in a `products` table), run `gate scan --review` to triage interactively and add columns to the allowlist. Allowlisted columns skip **all** redaction — both name-based and value-based. Only add a column to the allowlist when you are certain it contains no PII. Low-confidence pattern matches (below `confidence_threshold`) are redacted *and* flagged with a warning in `_gate_summary`; add the column to `column_allowlist` to suppress. Manage the list directly with `gate allowlist add/remove/list`.
+For false positives (e.g. `city` in a `products` table), run `gate scan --review` to triage interactively and add columns to the allowlist. Allowlisted columns skip **all** redaction — both name-based and value-based. Only add a column to the allowlist when you are certain it contains no PII. For runtime false positives, run `gate retro` after a session — it surfaces any low-confidence redactions with the exact `gate allowlist add <col>` command to suppress each one. Manage the list directly with `gate allowlist add/remove/list`.
 
 ## Quickstart
 
@@ -132,7 +132,7 @@ For false positives (e.g. `city` in a `products` table), run `gate scan --review
    gate init --harness gemini
    ```
 
-   Add `--scope project` for project-only setup. Restart your OpenCode, Cursor, or Gemini CLI session after `gate init` to load the hook. For Codex CLI, restart the session, then review the hook in the Trust & Permissions UI, mark it as trusted, and enable it. For Copilot CLI, the generated `.github/hooks/PreToolUse.json` is gitignored by default — each developer runs `gate init --harness copilot-cli` once in their local clone.
+   Add `--scope project` for project-only setup. Restart your OpenCode, Cursor, or Gemini CLI session after `gate init` to load the hook. For Codex CLI, restart the session, then review the hook in the Trust & Permissions UI, mark it as trusted, and enable it. For Copilot CLI, add `.github/hooks/PreToolUse.json` to your repo's `.gitignore` — each developer runs `gate init --harness copilot-cli` once in their local clone.
 
 4. *(Optional)* **Register MCP server proxies** so `tools/call` responses also pass through gate:
 
