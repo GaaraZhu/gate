@@ -69,7 +69,7 @@ Also works with OpenCode, Cursor, GitHub Copilot CLI, Codex CLI, and Gemini CLI 
 
 ## Scan your schema
 
-Before installing the hook, use `gate scan` to assess how much PII your schema exposes. Pipe a `TABLE_NAME, COLUMN_NAME` query into it and gate prints a risk report across every table. No config is required for `gate scan` itself — if you haven't created one yet, run `gate config --init-only` first.
+Before installing the hook, use `gate scan` to assess how much PII your schema exposes. Pipe a `TABLE_NAME, COLUMN_NAME` query into it and gate prints a risk report across every table. No config is required for `gate scan` itself.
 
 ```bash
 psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'public' ORDER BY TABLE_NAME, ORDINAL_POSITION" | gate scan
