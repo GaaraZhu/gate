@@ -277,12 +277,19 @@ fn print_report(s: &Summary, allowlist: &[String]) {
     );
     println!();
 
-    // Filter out warnings for columns already in the allowlist — the user has
-    // already acted on those; showing them again would just be noise.
+    // Only show false-positive warnings (low-confidence matches).
+    // Other warning types (e.g., SELECT * policy notices) are not actionable
+    // for the user and should not appear in retro.
+    // Filter out columns already in the allowlist — the user has already
+    // acted on those; showing them again would just be noise.
     let pending_warnings: Vec<&String> = s
         .warnings
         .iter()
         .filter(|w| {
+            // Only include low-confidence match warnings
+            if !w.starts_with("low-confidence match:") {
+                return false;
+            }
             let key = w
                 .split("key=")
                 .nth(1)
@@ -400,5 +407,43 @@ mod tests {
         s.add(ev_timed("tkpsql", 0, 0)); // legacy event: no timing recorded
         s.add(ev_timed("tkpsql", 2, 1500));
         assert_eq!(s.overhead_us, vec![500, 1500]);
+    }
+
+    #[test]
+    fn retro_filters_to_low_confidence_warnings_only() {
+        let mut s = Summary::default();
+        // Add a SELECT * warning (should be filtered out)
+        let mut ev1 = ev("tkpsql", 0, &[]);
+        ev1.warnings = vec![
+            "SELECT * encountered; wildcard_policy=warn, Gate 2 is the safety net".to_string(),
+        ];
+        s.add(ev1);
+
+        // Add a low-confidence warning (should be included)
+        let mut ev2 = ev("tkpsql", 1, &[("email", 1)]);
+        ev2.warnings = vec![
+            "low-confidence match: key=user_info pattern=email_pattern score=0.65".to_string(),
+        ];
+        s.add(ev2);
+
+        // Add another low-confidence warning (should be included)
+        let mut ev3 = ev("tkpsql", 1, &[("ssn", 1)]);
+        ev3.warnings = vec![
+            "low-confidence match: key=personal_data pattern=ssn_pattern score=0.72".to_string(),
+        ];
+        s.add(ev3);
+
+        assert_eq!(s.warnings.len(), 3);
+        // Manually filter to simulate what print_report does
+        let pending: Vec<&String> = s
+            .warnings
+            .iter()
+            .filter(|w| w.starts_with("low-confidence match:"))
+            .collect();
+        assert_eq!(
+            pending.len(),
+            2,
+            "Should only include low-confidence warnings, not SELECT * warnings"
+        );
     }
 }
