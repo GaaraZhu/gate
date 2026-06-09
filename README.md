@@ -66,17 +66,6 @@ The demo walks through three steps:
 
 > For the design rationale, threat-model walkthrough, and detection-pipeline deep dive, read [**Introducing gate**](https://gaarazhu.github.io/introducing-gate/).
 
-## Supported AI Tools
-
-| AI Tool | Bash Hook | MCP Wrap | Notes |
-|---|:---:|:---:|---|
-| [Claude Code](https://claude.ai/code) | ✅ | ✅ | |
-| [Cursor](https://cursor.sh) | ✅ | ✅ | Restart session after `gate init` to load the hook |
-| [OpenCode](https://opencode.ai) | ✅ | ✅ | Restart session after `gate init` to load the hook |
-| [GitHub Copilot CLI](https://github.com/features/copilot) | ✅ | ✅ | Hook is project-scoped; each developer runs `gate init` once |
-| [Codex CLI](https://github.com/openai/codex) | ✅ | ✅ | After `gate init`, restart session and trust + enable the hook in the Permissions UI |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | ✅ | ✅ | Restart session after `gate init` to load the hook |
-
 ## Scan your schema
 
 Before installing the hook, use `gate scan` to assess how much PII your schema exposes. Pipe a `TABLE_NAME, COLUMN_NAME` query into it and gate prints a risk report across every table. No config is required for `gate scan` itself.
@@ -208,6 +197,17 @@ If any query produced a low-confidence redaction, `gate retro` surfaces a **Low-
 ![gate retro output](assets/retro.jpg)
 
 Stats are collected by default and written to a local JSONL log on disk — they never leave your machine. Disable with `stats.enabled: false` in config.
+
+## Supported AI Tools
+
+| AI Tool | Bash Hook | MCP Wrap | Notes |
+|---|:---:|:---:|---|
+| [Claude Code](https://claude.ai/code) | ✅ | ✅ | |
+| [Cursor](https://cursor.sh) | ✅ | ✅ | Restart session after `gate init` to load the hook |
+| [OpenCode](https://opencode.ai) | ✅ | ✅ | Restart session after `gate init` to load the hook |
+| [GitHub Copilot CLI](https://github.com/features/copilot) | ✅ | ✅ | Hook is project-scoped; each developer runs `gate init` once |
+| [Codex CLI](https://github.com/openai/codex) | ✅ | ✅ | After `gate init`, restart session and trust + enable the hook in the Permissions UI |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | ✅ | ✅ | Restart session after `gate init` to load the hook |
 
 ## Supported query tools
 
