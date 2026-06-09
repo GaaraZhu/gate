@@ -35,6 +35,7 @@ Most PII guardrails for AI agents are themselves LLMs — they send your data to
 | Latency | ✅ < 10ms overhead | ❌ Adds an API round-trip |
 | Auditable | ✅ Every decision traceable to an explicit rule | ❌ Model reasoning is opaque |
 | Known gaps | ✅ Documented — free-text prose | ❌ False-negative rate unknown |
+| Redaction guarantee | ✅ 100% for configured tools — automated detection + `pii.column_denylist` closes any remaining gaps | ❌ No deterministic guarantee |
 
 The trade-off gate makes: rules can't catch PII in unstructured free-text prose. The [threat model](THREAT-MODEL.md) documents what gate doesn't cover.
 
@@ -75,19 +76,7 @@ Before installing the hook, use `gate scan` to assess how much PII your schema e
 psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'public' ORDER BY TABLE_NAME, ORDINAL_POSITION" | gate scan
 ```
 
-See [docs/scan.md](docs/scan.md) for queries against MySQL, MS SQL Server (including native `sqlcmd`), Databricks, and toolkit-managed clients.
-
-Risk level is weighted by category sensitivity — one SSN column matters more than twenty address columns. Exits with code 1 if any PII columns are found (scriptable in CI). Pass `--verbose` to show all detected columns, or `--json` for machine-readable output.
-
-| Sensitivity | Categories | Risk floor |
-|-------------|-----------|------------|
-| **Critical** | Government IDs, Health & medical, Financial, Biometric | **HIGH** always; **CRITICAL** if ≥3 columns or >10% of schema |
-| **Elevated** | Contact, Names, Date of birth, Location of birth, Family & relationships, Employment | **HIGH** if >5% of schema; **CRITICAL** if >25% |
-| **Standard** | Address & location, Online & technical, Demographics | **HIGH** if >25% of schema |
-
-> **Note:** `gate scan` detects PII by column name only. A LOW result means your column names look clean — it does not mean the data is safe. Gate 2 additionally inspects values at query time, catching PII in free-text, JSON, and ambiguously-named columns that scan cannot see. In multi-row results, if any value in a column matches a PII pattern, the entire column is promoted and all rows are redacted — not just the matching row.
-
-For false positives (e.g. `city` in a `products` table), run `gate scan --review` to triage interactively and add columns to the allowlist. Allowlisted columns skip **all** redaction — both name-based and value-based. Only add a column to the allowlist when you are certain it contains no PII. For runtime false positives, run `gate retro` after a session — it surfaces any low-confidence redactions with the exact `gate allowlist add <col>` command to suppress each one. Manage the list directly with `gate allowlist add/remove/list`.
+See [docs/scan.md](docs/scan.md) for queries against MySQL, MS SQL Server (including native `sqlcmd`), Databricks, and toolkit-managed clients — and for the full risk-scoring breakdown, denylist and allowlist guidance.
 
 ## Quickstart
 
@@ -113,23 +102,12 @@ For false positives (e.g. `city` in a `products` table), run `gate scan --review
 3. **Register the hook** with your agent harness:
 
    ```bash
-   # Claude Code (default)
-   gate init
-
-   # OpenCode
-   gate init --harness opencode
-
-   # Cursor
-   gate init --harness cursor
-
-   # GitHub Copilot CLI (project-scoped, run from repo root)
-   gate init --harness copilot-cli
-
-   # Codex CLI
-   gate init --harness codex
-
-   # Gemini CLI
-   gate init --harness gemini
+   gate init                            # Claude Code (default)
+   gate init --harness opencode         # OpenCode
+   gate init --harness cursor           # Cursor
+   gate init --harness copilot-cli      # GitHub Copilot CLI (project-scoped, run from repo root)
+   gate init --harness codex            # Codex CLI
+   gate init --harness gemini           # Gemini CLI
    ```
 
    Add `--scope project` for project-only setup. Restart your OpenCode, Cursor, or Gemini CLI session after `gate init` to load the hook. For Codex CLI, restart the session, then review the hook in the Trust & Permissions UI, mark it as trusted, and enable it. For Copilot CLI, add `.github/hooks/PreToolUse.json` to your repo's `.gitignore` — each developer runs `gate init --harness copilot-cli` once in their local clone.
@@ -137,23 +115,12 @@ For false positives (e.g. `city` in a `products` table), run `gate scan --review
 4. *(Optional)* **Register MCP server proxies** so `tools/call` responses also pass through gate:
 
    ```bash
-   # Claude Code (default) — dry-run, shows what would change
-   gate init --wrap-mcp
-
-   # OpenCode
-   gate init --harness opencode --wrap-mcp --yes
-
-   # Cursor
-   gate init --harness cursor --wrap-mcp --yes
-
-   # Copilot CLI
-   gate init --harness copilot-cli --wrap-mcp --yes
-
-   # Codex CLI
-   gate init --harness codex --wrap-mcp --yes
-
-   # Gemini CLI
-   gate init --harness gemini --wrap-mcp --yes
+   gate init --wrap-mcp                          # Claude Code (default) — dry-run, shows what would change
+   gate init --harness opencode --wrap-mcp --yes # OpenCode
+   gate init --harness cursor --wrap-mcp --yes   # Cursor
+   gate init --harness copilot-cli --wrap-mcp --yes # GitHub Copilot CLI
+   gate init --harness codex --wrap-mcp --yes    # Codex CLI
+   gate init --harness gemini --wrap-mcp --yes   # Gemini CLI
    ```
 
    Add `--scope project` for project-level MCP config. For Cursor project-scoped MCP, re-enable the servers in **Settings → Tools & MCPs** after registration. See [docs/mcp.md](docs/mcp.md) for `--servers`, per-harness paths, and manual single-server registration.
@@ -168,7 +135,7 @@ Run `gate validate` to confirm your config is valid before the first session.
 
 ### Bash tooling path
 
-Every Bash command passes through `gate hook` first. Commands that match a configured tool are silently rewritten to `gate run -- <original command>`, which spawns the subprocess and pipes stdout through the two-gate detection pipeline. The rewrite happens in the harness's pre-tool-execution hook — it is **enforcing** in Claude Code, OpenCode, Cursor, GitHub Copilot CLI, Codex CLI, and Gemini CLI; the agent cannot bypass it. Humans and CI scripts running outside the harness are untouched.
+Every Bash command passes through `gate hook` first. Commands that match a configured tool are silently rewritten to `gate run -- <original command>`, which spawns the subprocess and pipes stdout through the two-gate detection pipeline. The rewrite is enforcing — the agent cannot bypass it.
 
 ```
 AI asks to run: tkpsql query --sql "SELECT * FROM users"
@@ -227,19 +194,15 @@ Stats are collected by default and written to a local JSONL log on disk — they
 
 ## What gate does NOT protect against
 
-`gate` is a deterministic redaction layer, not a sandbox. It assumes the agent is non-adversarial and only inspects output from commands listed under `tools:` in config. The following are deliberately out of scope:
+`gate` is a deterministic redaction layer, not a sandbox. Key limitations:
 
-- **Adversarial agents / prompt injection.** Gate's threat model is an agent that *inadvertently* exfiltrates PII. `gate protect` (Unix) blocks the most direct bypass — a hijacked agent disabling gate via config edits — by transferring config ownership to root. But a determined attacker can still route around gate by invoking commands not in `tools:`, requesting non-JSON output formats, piping through encoders, or removing the hook entry from the harness settings file for the next session. Pair gate with a harness-level Bash allowlist to close the residual gap.
 - **Commands not in `tools:`.** The AI can invoke them freely; their output is never inspected.
-- **Non-JSON tool output.** Plain text, CSV, and other formats pass through unchanged. Configure tools to emit JSON.
-- **Encoded or obfuscated PII.** Base64-encoded emails, URL-encoded values, or deliberately spaced strings (`a l i c e @ e x a m p l e . c o m`) are not detected.
-- **Non-US PII by value alone.** The built-in SSN regex requires dashes. AU/NZ phone numbers are caught by value — mobile (`04XX`/`02X` local, `+61 4XX`/`+64 2X` international) and landline (`0[2378]`/`0[34679]` local, `+61 [2378]`/`+64 [34679]` international) — including the common `+610`/`+640` stray-leading-zero variant and arbitrary whitespace in the number. International-prefix numbers (`+61`/`+64`) auto-redact regardless of column name; local-format numbers require a PII-named column. Other AU/NZ identifiers are also covered at the value layer: ABN (mod-89 checksum), Medicare (mod-10 checksum), formatted TFN and IRD numbers (mod-11, separators required), NZ NHI (alpha-prefix regex), and NZ bank account numbers. Bare/unformatted TFN and IRD strings without separators are not detected by value alone — column-name matching remains the safety net for those. Other non-AU/NZ formats rely solely on column-name matching — extend `pii.column_names` or `pii.patterns` for your region.
-- **PII already in the model's context** from prior turns, system prompts, file reads, or earlier summarisation. Gate filters what goes *into* the model from configured tools; what's already there stays there.
-- **Tool-side network exfiltration.** If a configured tool sends data to an external service directly (rather than returning it via stdout), gate never sees it.
-- **Write operations.** `INSERT`, `UPDATE`, `DELETE` are not inspected or blocked.
-- **Credential exposure.** Gate holds no credentials; that is the responsibility of the underlying tool. Prefer toolkit commands or MCP servers over raw clients that take credentials on the CLI.
+- **Non-JSON tool output.** Plain text, CSV, and other formats pass through unchanged.
+- **Free-text prose.** PII embedded in unstructured text fields is not detected.
+- **Adversarial agents / prompt injection.** Gate assumes the agent inadvertently exfiltrates PII — a deliberate attacker can route around it.
+- **PII already in the model's context** from prior turns, system prompts, or file reads.
 
-For a stronger boundary, combine gate with harness-level tool restrictions and database-level read-only roles. See [THREAT-MODEL.md](THREAT-MODEL.md) for the full attacker model and known bypasses.
+See [THREAT-MODEL.md](THREAT-MODEL.md) for the full attacker model, known bypasses, and recommended configuration for stricter enforcement.
 
 ## Supported query tools
 

@@ -60,3 +60,23 @@ databricks api post /api/2.0/sql/statements --profile <profile> --json "{\"state
 - `--review` — after the report, enter an interactive prompt to triage false positives and add them to the allowlist
 
 Exit code is 1 if any PII columns are detected, so the command is safe to drop into CI audits.
+
+## Risk scoring
+
+Risk level is weighted by category sensitivity — one SSN column matters more than twenty address columns.
+
+| Sensitivity | Categories | Risk floor |
+|-------------|-----------|------------|
+| **Critical** | Government IDs, Health & medical, Financial, Biometric | **HIGH** always; **CRITICAL** if ≥3 columns or >10% of schema |
+| **Elevated** | Contact, Names, Date of birth, Location of birth, Family & relationships, Employment | **HIGH** if >5% of schema; **CRITICAL** if >25% |
+| **Standard** | Address & location, Online & technical, Demographics | **HIGH** if >25% of schema |
+
+> **Note:** `gate scan` detects PII by column name only. A LOW result means your column names look clean — it does not mean the data is safe. Gate 2 additionally inspects values at query time, catching PII in free-text, JSON, and ambiguously-named columns that scan cannot see. In multi-row results, if any value in a column matches a PII pattern, the entire column is promoted and all rows are redacted — not just the matching row.
+
+## Closing detection gaps with the denylist
+
+For columns that contain PII but slip through automated detection — ambiguous names, custom identifiers, non-standard formats — add them to `pii.column_denylist` in config. Deny-listed columns are **always** redacted at the name-match step, before any value inspection runs, giving a 100% redaction guarantee regardless of the value's content or format.
+
+## Handling false positives
+
+For false positives (e.g. `city` in a `products` table), run `gate scan --review` to triage interactively and add columns to the allowlist. Allowlisted columns skip **all** redaction — both name-based and value-based. Only add a column to the allowlist when you are certain it contains no PII. For runtime false positives, run `gate retro` after a session — it surfaces any low-confidence redactions with the exact `gate allowlist add <col>` command to suppress each one. Manage the list directly with `gate allowlist add/remove/list`.

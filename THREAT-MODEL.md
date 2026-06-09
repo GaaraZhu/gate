@@ -58,12 +58,16 @@ entry. For unconfigured tools, Gate 2 runs alone.
 
 ### Gate 2 — value and column-name redaction
 
-Gate 2 runs on every query result. It applies three checks:
+Gate 2 runs on every query result. It applies four checks in order, short-circuiting on the first match:
 
 1. **Forced columns** (from Gate 1): always redacted regardless of value.
 2. **Column-name heuristics**: the field key is tokenised and matched against a synonym table
-   covering ~50 PII categories. Matches above a confidence threshold are redacted.
-3. **Value patterns**: the field value is matched against built-in regex patterns and a Luhn check.
+   covering ~50 PII categories. Matches are redacted immediately.
+3. **Column denylist** (`pii.column_denylist` in config): exact name match against user-supplied
+   column names. Always redacted regardless of value — 100% guarantee for configured columns.
+4. **Value patterns**: the field value is matched against built-in regex patterns, checksum
+   validators (Luhn, AU ABN, AU Medicare, AU TFN, NZ IRD, NZ NHI), and a whitespace-stripped
+   compact form for phone numbers.
 
 ---
 
@@ -75,13 +79,20 @@ Gate 2's built-in value patterns cover:
 |---|---|---|
 | Email address | Regex | High confidence. Standard RFC-5321 format. |
 | US Social Security Number | Regex (`\d{3}-\d{2}-\d{4}`) | **Requires dashes.** `123456789` (no dashes) is not matched. |
-| US phone number | Regex | US-centric format. Non-US numbers (e.g. `+64 21 ...`) may not match. |
+| US phone number | Regex | US-centric format. |
+| AU/NZ phone number | Regex | Mobile and landline: local (`04XX`/`02X`, `0[2378]`/`0[34679]`) and international (`+61`/`+64`) formats, including stray-leading-zero variants and arbitrary whitespace. International-prefix numbers auto-redact regardless of column name; local-format numbers require a PII-named column. |
 | Payment card number | Regex + Luhn check | 13–16 digit strings that pass the Luhn algorithm. |
+| AU ABN | mod-89 checksum | 11-digit strings passing the ABN weighted checksum. |
+| AU Medicare | mod-10 checksum | First digit 2–6 + checksum. |
+| AU TFN | mod-11 checksum + formatting | **Requires separators** (`NNN NNN NNN` or `NNN-NNN-NNN`). Bare 9-digit strings are not matched by value alone. |
+| NZ IRD | mod-11 checksum + formatting | **Requires separators** (`NN-NNN-NNN` or `NNN-NNN-NNN`). Bare strings are not matched by value alone. |
+| NZ NHI | Check-character validation | Alpha-prefix regex (old mod-11 / new mod-23 formats). |
+| NZ bank account number | Regex | Standard NZ bank account format. |
 
-Everything else (IBAN, routing numbers, passport numbers, health data, biometric values, addresses,
-NZ IRD, AU TFN, UK NHS numbers, Aadhaar, EU VAT) is **column-name-only**. If a column storing an
-IBAN has an unusual name (e.g. `bank_ref`) and is not in the configured `column_names` list, Gate 2
-will not redact its value.
+Everything else (IBAN, routing numbers, passport numbers, biometric values, addresses, UK NHS
+numbers, Aadhaar, EU VAT) is **column-name-only**. If a column storing an IBAN has an unusual name
+(e.g. `bank_ref`) and is not in the configured `pii.column_denylist`, Gate 2 will not redact its
+value.
 
 Value patterns can be extended or overridden in config:
 
@@ -99,7 +110,7 @@ pii:
 ### Values that pass through Gate 2
 
 - **SSN without dashes**: `123456789` is not matched by the SSN regex. Only `123-45-6789` is caught.
-- **Non-US phone numbers**: formats like `+44 7911 123456` or `021 123 4567` may not be caught.
+- **Non-AU/NZ phone numbers**: AU/NZ formats are caught at the value layer (see table above). Other international formats (e.g. `+44 7911 123456`) are not detected by value alone — add the column to `pii.column_denylist` for a guaranteed redaction.
 - **Encoded or transformed PII**: base64-encoded emails, URL-encoded values, or deliberately
   obfuscated strings (e.g. `a l i c e @ e x a m p l e . c o m`) are not detected.
 - **Deliberate string literals in SQL**: `SELECT 'alice@example.com' AS note` — Gate 1 cannot
@@ -201,7 +212,7 @@ pii:
       regex: '\b\d{3}\s\d{3}\s\d{3}\b'
 
 # Add column names that are non-obvious in your schema:
-  column_names:
+  column_denylist:
     - contact_ref
     - cust_id
     - internal_note

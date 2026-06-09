@@ -35,6 +35,7 @@ AI 智能体越来越多地通过 CLI 工具、脚本和 MCP 服务器访问内�
 | 延迟 | ✅ 不足 10ms 的开销 | ❌ 增加一次 API 往返 |
 | 可审计 | ✅ 每个决策都可追溯到明确的规则 | ❌ 模型推理不透明 |
 | 已知缺口 | ✅ 有据可查——自由文本散文 | ❌ 假阴性率未知 |
+| 脱敏保证 | ✅ 对已配置工具 100%——自动检测 + `pii.column_denylist` 覆盖所有剩余缺口 | ❌ 无确定性保证 |
 
 gate 的取舍：规则无法捕捉非结构化自由文本中的 PII。[威胁模型](THREAT-MODEL.md) 记录了 gate 不覆盖的范围。
 
@@ -87,6 +88,8 @@ psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INF
 
 > **注意：** `gate scan` 仅按列名检测 PII。LOW 结果意味着你的列名看起来是干净的——但这并不代表数据本身是安全的。Gate 2 会在查询时额外检查字段值，捕捉自由文本、JSON 以及命名含糊的列中的 PII，这些是 scan 无法看到的。
 
+对于自动检测无法覆盖的列——命名含糊、自定义标识符、非标准格式——请将其加入配置中的 `pii.column_denylist`。列入黑名单的列会在名称匹配阶段被**始终**脱敏，无需任何字段值检查，无论值的内容或格式如何，都能保证 100% 的脱敏率。
+
 对于误报（例如 `products` 表中的 `city` 列），运行 `gate scan --review` 进行交互式甄别，并将相关列加入白名单。白名单中的列会跳过**所有**脱敏——包括基于列名和基于字段值的检查。只在你确定列中不含 PII 时，才将其加入白名单。对于运行时误报，在会话结束后运行 `gate retro`——它会列出所有低置信度脱敏的列，并提供对应的 `gate allowlist add <col>` 命令供你直接执行。也可以直接用 `gate allowlist add/remove/list` 管理该列表。
 
 ## 快速上手
@@ -113,23 +116,12 @@ psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INF
 3. **向你的智能体 harness 注册钩子**：
 
    ```bash
-   # Claude Code（默认）
-   gate init
-
-   # OpenCode
-   gate init --harness opencode
-
-   # Cursor
-   gate init --harness cursor
-
-   # GitHub Copilot CLI（项目级，在仓库根目录运行）
-   gate init --harness copilot-cli
-
-   # Codex CLI
-   gate init --harness codex
-
-   # Gemini CLI
-   gate init --harness gemini
+   gate init                            # Claude Code（默认）
+   gate init --harness opencode         # OpenCode
+   gate init --harness cursor           # Cursor
+   gate init --harness copilot-cli      # GitHub Copilot CLI（项目级，在仓库根目录运行）
+   gate init --harness codex            # Codex CLI
+   gate init --harness gemini           # Gemini CLI
    ```
 
    加上 `--scope project` 可进行仅项目级的安装。执行 `gate init` 后，重启你的 OpenCode、Cursor 或 Gemini CLI 会话以加载钩子。对于 Codex CLI，重启会话后，在 Trust & Permissions 界面中查看该钩子，将其标记为受信任并启用。对于 Copilot CLI，请将 `.github/hooks/PreToolUse.json` 加入你的仓库的 `.gitignore`——每位开发者需在本地克隆中各自运行一次 `gate init --harness copilot-cli`。
@@ -137,23 +129,12 @@ psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INF
 4. *（可选）* **注册 MCP 服务器代理**，使 `tools/call` 响应也经过 gate：
 
    ```bash
-   # Claude Code（默认）—— 试运行，显示将会发生的改动
-   gate init --wrap-mcp
-
-   # OpenCode
-   gate init --harness opencode --wrap-mcp --yes
-
-   # Cursor
-   gate init --harness cursor --wrap-mcp --yes
-
-   # Copilot CLI
-   gate init --harness copilot-cli --wrap-mcp --yes
-
-   # Codex CLI
-   gate init --harness codex --wrap-mcp --yes
-
-   # Gemini CLI
-   gate init --harness gemini --wrap-mcp --yes
+   gate init --wrap-mcp                             # Claude Code（默认）—— 试运行，显示将会发生的改动
+   gate init --harness opencode --wrap-mcp --yes    # OpenCode
+   gate init --harness cursor --wrap-mcp --yes      # Cursor
+   gate init --harness copilot-cli --wrap-mcp --yes # GitHub Copilot CLI
+   gate init --harness codex --wrap-mcp --yes       # Codex CLI
+   gate init --harness gemini --wrap-mcp --yes      # Gemini CLI
    ```
 
    加上 `--scope project` 可使用项目级的 MCP 配置。对于 Cursor 的项目级 MCP，注册后需在 **Settings → Tools & MCPs** 中重新启用相关服务器。关于 `--servers`、各 harness 的路径以及手动注册单个服务器，见 [docs/mcp.md](docs/mcp.md)。
@@ -168,7 +149,7 @@ psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INF
 
 ### Bash 工具路径
 
-每条 Bash 命令都会先经过 `gate hook`。匹配到已配置工具的命令会被静默改写为 `gate run -- <原始命令>`，由它启动子进程并将 stdout 通过双门检测流水线。这一改写发生在 harness 的工具执行前钩子中——它在 Claude Code、OpenCode、Cursor、GitHub Copilot CLI、Codex CLI 和 Gemini CLI 中都是**强制性的**；智能体无法绕过。在 harness 之外运行的人类用户和 CI 脚本不受影响。
+每条 Bash 命令都会先经过 `gate hook`。匹配到已配置工具的命令会被静默改写为 `gate run -- <原始命令>`，由它启动子进程并将 stdout 通过双门检测流水线。这一改写是强制性的——智能体无法绕过。
 
 ```
 AI 请求运行: tkpsql query --sql "SELECT * FROM users"
@@ -227,19 +208,15 @@ AI <───脱敏后的结果─────┘
 
 ## gate 不防护什么
 
-`gate` 是一个确定性的脱敏层，而非沙箱。它假定智能体是非对抗性的，并且只检查配置中 `tools:` 下列出的命令的输出。以下内容被刻意排除在范围之外：
+`gate` 是一个确定性的脱敏层，而非沙箱。主要限制：
 
-- **对抗性智能体 / 提示注入。** gate 的威胁模型是一个*无意中*泄露 PII 的智能体。`gate protect`（Unix）通过将配置文件的所有权转移给 root，封堵了最直接的绕过方式——被劫持的智能体通过编辑配置来禁用 gate。但有决心的攻击者仍可绕过 gate：调用不在 `tools:` 中的命令、请求非 JSON 输出格式、通过编码器进行管道处理，或在下次会话前从 harness 设置文件中删除钩子条目。请将 gate 与 harness 级别的 Bash 允许列表搭配使用，以收窄剩余的缺口。
 - **不在 `tools:` 中的命令。** AI 可自由调用它们；它们的输出绝不会被检查。
-- **非 JSON 的工具输出。** 纯文本、CSV 及其他格式会原样透传。请将工具配置为输出 JSON。
-- **经过编码或混淆的 PII。** Base64 编码的邮箱、URL 编码的值，或刻意加了空格的字符串（`a l i c e @ e x a m p l e . c o m`）不会被检测到。
-- **仅凭字段值的非美国 PII。** 内置的 SSN 正则要求带连字符，电话模式以美国为中心。非美国格式依赖列名匹配——请为你所在地区扩展 `pii.column_names` 或 `pii.patterns`。
-- **已存在于模型上下文中的 PII**——来自先前的对话轮次、系统提示、文件读取或更早的摘要。gate 过滤的是从已配置工具*进入*模型的内容；已经在那里的内容会留在那里。
-- **工具侧的网络泄露。** 如果已配置的工具直接将数据发送到外部服务（而非通过 stdout 返回），gate 永远看不到它。
-- **写操作。** `INSERT`、`UPDATE`、`DELETE` 不会被检查或拦截。
-- **凭据暴露。** gate 不持有任何凭据；那是底层工具的责任。相比于在 CLI 上接收凭据的原始客户端，更推荐使用 toolkit 命令或 MCP 服务器。
+- **非 JSON 的工具输出。** 纯文本、CSV 及其他格式会原样透传。
+- **自由文本散文。** 嵌入在非结构化文本字段中的 PII 无法被检测到。
+- **对抗性智能体 / 提示注入。** gate 假定智能体是无意中泄露 PII——蓄意的攻击者可以绕过它。
+- **已存在于模型上下文中的 PII**——来自先前的对话轮次、系统提示或文件读取。
 
-要获得更强的边界，请将 gate 与 harness 级别的工具限制以及数据库级别的只读角色结合使用。完整的攻击者模型和已知绕过方式见 [THREAT-MODEL.md](THREAT-MODEL.md)。
+完整的攻击者模型、已知绕过方式及更严格配置的建议，见 [THREAT-MODEL.md](THREAT-MODEL.md)。
 
 ## 支持的查询工具
 
