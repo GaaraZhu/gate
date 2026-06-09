@@ -170,7 +170,7 @@ AI <───redacted result─┘
 
 ## Output format
 
-Redacted output preserves the original JSON structure. PII values are replaced with `[PII:<type>]` placeholders. A `_gate_summary` field is appended reporting what was redacted.
+PII values are replaced with `[PII:<type>]` placeholders; original JSON structure is preserved. A `_gate_summary` field is appended reporting what was redacted.
 
 ```json
 {
@@ -180,7 +180,7 @@ Redacted output preserves the original JSON structure. PII values are replaced w
 }
 ```
 
-With `hash_values: true` in config, each placeholder gains an 8-char hex suffix derived from the original value (`[PII:email:7f83b165]`). The same raw value always produces the same suffix, so the AI can join or deduplicate across rows without ever seeing the underlying data. Error responses from the underlying tool pass through unchanged.
+See [docs/configuration.md](docs/configuration.md) for output options including deterministic value hashing.
 
 ## Protection retrospective
 
