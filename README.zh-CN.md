@@ -64,9 +64,18 @@ gate 的取舍：规则无法捕捉非结构化自由文本中的 PII。[威胁�
 
 ![gate 在 PII 到达模型之前进行拦截](assets/demo.gif)
 
-同样适用于 OpenCode、Cursor、GitHub Copilot CLI、Codex CLI 和 Gemini CLI——完整的兼容性矩阵见 [支持的 AI 工具](#支持的-ai-工具)。
-
 > 关于设计理念、威胁模型剖析以及检测流水线的深入解读，请阅读 [**Introducing gate**](https://gaarazhu.github.io/introducing-gate/)。
+
+## 支持的 AI 工具
+
+| AI 工具 | Bash 钩子 | MCP 包裹 | 备注 |
+|---|:---:|:---:|---|
+| [Claude Code](https://claude.ai/code) | ✅ | ✅ | |
+| [Cursor](https://cursor.sh) | ✅ | ✅ | 执行 `gate init` 后重启会话以加载钩子 |
+| [OpenCode](https://opencode.ai) | ✅ | ✅ | 执行 `gate init` 后重启会话以加载钩子 |
+| [GitHub Copilot CLI](https://github.com/features/copilot) | ✅ | ✅ | 钩子为项目级；每位开发者运行一次 `gate init` |
+| [Codex CLI](https://github.com/openai/codex) | ✅ | ✅ | 执行 `gate init` 后，重启会话并在 Permissions 界面中信任并启用该钩子 |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | ✅ | ✅ | 执行 `gate init` 后重启会话以加载钩子 |
 
 ## 扫描你的 schema
 
@@ -76,36 +85,18 @@ gate 的取舍：规则无法捕捉非结构化自由文本中的 PII。[威胁�
 psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'public' ORDER BY TABLE_NAME, ORDINAL_POSITION" | gate scan
 ```
 
-针对 MySQL、MS SQL Server（含原生 `sqlcmd`）、Databricks 以及 toolkit 管理的客户端的查询语句，见 [docs/scan.md](docs/scan.md)。
-
-风险等级按类别敏感度加权——一个 SSN 列比二十个地址列更重要。若发现任何 PII 列则以退出码 1 结束（可在 CI 中脚本化）。传入 `--verbose` 显示所有检测到的列，或传入 `--json` 输出机器可读格式。
-
-| 敏感度 | 类别 | 风险下限 |
-|-------------|-----------|------------|
-| **关键（Critical）** | 政府标识、健康与医疗、金融、生物特征 | 始终为 **HIGH**；若 ≥3 列或占 schema >10% 则为 **CRITICAL** |
-| **较高（Elevated）** | 联系方式、姓名、出生日期、出生地、家庭与关系、雇佣 | 占 schema >5% 时为 **HIGH**；>25% 时为 **CRITICAL** |
-| **标准（Standard）** | 地址与位置、在线与技术信息、人口统计 | 占 schema >25% 时为 **HIGH** |
-
-> **注意：** `gate scan` 仅按列名检测 PII。LOW 结果意味着你的列名看起来是干净的——但这并不代表数据本身是安全的。Gate 2 会在查询时额外检查字段值，捕捉自由文本、JSON 以及命名含糊的列中的 PII，这些是 scan 无法看到的。
-
-对于自动检测无法覆盖的列——命名含糊、自定义标识符、非标准格式——请将其加入配置中的 `pii.column_denylist`。列入黑名单的列会在名称匹配阶段被**始终**脱敏，无需任何字段值检查，无论值的内容或格式如何，都能保证 100% 的脱敏率。
-
-对于误报（例如 `products` 表中的 `city` 列），运行 `gate scan --review` 进行交互式甄别，并将相关列加入白名单。白名单中的列会跳过**所有**脱敏——包括基于列名和基于字段值的检查。只在你确定列中不含 PII 时，才将其加入白名单。对于运行时误报，在会话结束后运行 `gate retro`——它会列出所有低置信度脱敏的列，并提供对应的 `gate allowlist add <col>` 命令供你直接执行。也可以直接用 `gate allowlist add/remove/list` 管理该列表。
+针对 MySQL、MS SQL Server（含原生 `sqlcmd`）、Databricks 以及 toolkit 管理的客户端的查询语句，以及完整的风险评分说明、黑名单和白名单指南，见 [docs/scan.md](docs/scan.md)。
 
 ## 快速上手
 
-1. **安装 gate**
+1. **安装 gate**（三选一）
 
    ```bash
-   # Homebrew —— macOS 和 Linux（推荐）
-   brew tap GaaraZhu/gate && brew install gate
-
-   # cargo binstall —— 下载预编译的二进制文件
-   cargo binstall gate
-
-   # 或从 releases 页面获取二进制文件
-   # https://github.com/GaaraZhu/gate/releases
+   brew tap GaaraZhu/gate && brew install gate  # Homebrew —— macOS 和 Linux（推荐）
+   cargo binstall gate                           # cargo binstall —— 下载预编译的二进制文件
    ```
+
+   或直接从 [releases 页面](https://github.com/GaaraZhu/gate/releases) 下载二进制文件。
 
 2. **创建你的配置**（会在编辑器中打开 `~/.config/gate/config.yaml`）：
 
@@ -182,7 +173,7 @@ AI ──tools/call──> gate mcp ──转发──> 上游 MCP 服务器
 AI <───脱敏后的结果─────┘
 ```
 
-## 输出格式
+### 输出
 
 PII 值会被替换为 `[PII:<type>]` 占位符，原始 JSON 结构保持不变。并追加一个 `_gate_summary` 字段，报告脱敏了哪些内容。
 
@@ -196,16 +187,6 @@ PII 值会被替换为 `[PII:<type>]` 占位符，原始 JSON 结构保持不变
 
 输出选项（包括确定性值哈希）见 [docs/configuration.md](docs/configuration.md)。
 
-## 防护回顾
-
-`_gate_summary` 报告的是单次响应。`gate retro` 会跨所有响应进行汇总——总查询数、已脱敏的 PII 字段数、命中率，以及按工具和 PII 类别的细分。适用于定期审计，以及确认这道边界确实在发挥作用。
-
-若任何查询产生了低置信度脱敏，`gate retro` 会显示一个**低置信度脱敏**部分，列出每个唯一警告列以及对应的 `gate allowlist add <col>` 命令供你直接抑制。将列加入白名单后，它会自动从该部分消失。
-
-![gate retro 输出](assets/retro.jpg)
-
-统计数据默认收集并写入磁盘上的本地 JSONL 日志——它们绝不会离开你的机器。在配置中设置 `stats.enabled: false` 可禁用。
-
 ## gate 不防护什么
 
 `gate` 是一个确定性的脱敏层，而非沙箱。主要限制：
@@ -217,6 +198,16 @@ PII 值会被替换为 `[PII:<type>]` 占位符，原始 JSON 结构保持不变
 - **已存在于模型上下文中的 PII**——来自先前的对话轮次、系统提示或文件读取。
 
 完整的攻击者模型、已知绕过方式及更严格配置的建议，见 [THREAT-MODEL.md](THREAT-MODEL.md)。
+
+## 防护回顾
+
+`_gate_summary` 报告的是单次响应。`gate retro` 会跨所有响应进行汇总——总查询数、已脱敏的 PII 字段数、命中率，以及按工具和 PII 类别的细分。适用于定期审计，以及确认这道边界确实在发挥作用。
+
+若任何查询产生了低置信度脱敏，`gate retro` 会显示一个**低置信度脱敏**部分，列出每个唯一警告列以及对应的 `gate allowlist add <col>` 命令供你直接抑制。将列加入白名单后，它会自动从该部分消失。
+
+![gate retro 输出](assets/retro.jpg)
+
+统计数据默认收集并写入磁盘上的本地 JSONL 日志——它们绝不会离开你的机器。在配置中设置 `stats.enabled: false` 可禁用。
 
 ## 支持的查询工具
 
@@ -266,17 +257,6 @@ sudo gate unprotect    # 恢复直接写入权限
 ```
 
 在操作系统层面跨所有 harness 强制执行（Claude Code、OpenCode、Cursor、GitHub Copilot CLI、Codex CLI、Gemini CLI）。不支持 Windows。
-
-## 支持的 AI 工具
-
-| AI 工具 | Bash 钩子 | MCP 包裹 | 备注 |
-|---|:---:|:---:|---|
-| [Claude Code](https://claude.ai/code) | ✅ | ✅ | |
-| [Cursor](https://cursor.sh) | ✅ | ✅ | 执行 `gate init` 后重启会话以加载钩子 |
-| [OpenCode](https://opencode.ai) | ✅ | ✅ | 执行 `gate init` 后重启会话以加载钩子 |
-| [GitHub Copilot CLI](https://github.com/features/copilot) | ✅ | ✅ | 钩子为项目级；每位开发者运行一次 `gate init` |
-| [Codex CLI](https://github.com/openai/codex) | ✅ | ✅ | 执行 `gate init` 后，重启会话并在 Permissions 界面中信任并启用该钩子 |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | ✅ | ✅ | 执行 `gate init` 后重启会话以加载钩子 |
 
 ## 文档
 

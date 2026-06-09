@@ -64,9 +64,18 @@ The demo walks through three steps:
 
 ![gate intercepting PII before it reaches the model](assets/demo.gif)
 
-Also works with OpenCode, Cursor, GitHub Copilot CLI, Codex CLI, and Gemini CLI — see [Supported AI Tools](#supported-ai-tools) for the full compatibility matrix.
-
 > For the design rationale, threat-model walkthrough, and detection-pipeline deep dive, read [**Introducing gate**](https://gaarazhu.github.io/introducing-gate/).
+
+## Supported AI Tools
+
+| AI Tool | Bash Hook | MCP Wrap | Notes |
+|---|:---:|:---:|---|
+| [Claude Code](https://claude.ai/code) | ✅ | ✅ | |
+| [Cursor](https://cursor.sh) | ✅ | ✅ | Restart session after `gate init` to load the hook |
+| [OpenCode](https://opencode.ai) | ✅ | ✅ | Restart session after `gate init` to load the hook |
+| [GitHub Copilot CLI](https://github.com/features/copilot) | ✅ | ✅ | Hook is project-scoped; each developer runs `gate init` once |
+| [Codex CLI](https://github.com/openai/codex) | ✅ | ✅ | After `gate init`, restart session and trust + enable the hook in the Permissions UI |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | ✅ | ✅ | Restart session after `gate init` to load the hook |
 
 ## Scan your schema
 
@@ -80,18 +89,14 @@ See [docs/scan.md](docs/scan.md) for queries against MySQL, MS SQL Server (inclu
 
 ## Quickstart
 
-1. **Install gate**
+1. **Install gate** (pick one)
 
    ```bash
-   # Homebrew — macOS and Linux (recommended)
-   brew tap GaaraZhu/gate && brew install gate
-
-   # cargo binstall — downloads a prebuilt binary
-   cargo binstall gate
-
-   # Or grab a binary from the releases page
-   # https://github.com/GaaraZhu/gate/releases
+   brew tap GaaraZhu/gate && brew install gate  # Homebrew — macOS and Linux (recommended)
+   cargo binstall gate                           # cargo binstall — downloads a prebuilt binary
    ```
+
+   Or grab a binary directly from the [releases page](https://github.com/GaaraZhu/gate/releases).
 
 2. **Create your config** (opens `~/.config/gate/config.yaml` in your editor):
 
@@ -168,7 +173,7 @@ AI ──tools/call──> gate mcp ──forward──> upstream MCP server
 AI <───redacted result─┘
 ```
 
-## Output format
+### Output
 
 PII values are replaced with `[PII:<type>]` placeholders; original JSON structure is preserved. A `_gate_summary` field is appended reporting what was redacted.
 
@@ -182,16 +187,6 @@ PII values are replaced with `[PII:<type>]` placeholders; original JSON structur
 
 See [docs/configuration.md](docs/configuration.md) for output options including deterministic value hashing.
 
-## Protection retrospective
-
-`_gate_summary` reports a single response. `gate retro` aggregates across all of them — total queries seen, PII fields redacted, hit rate, plus a breakdown by tool and PII category. Useful for periodic audits and for confirming the boundary is doing real work.
-
-If any query produced a low-confidence redaction, `gate retro` surfaces a **Low-confidence redactions** section listing each unique warned column and the exact `gate allowlist add <col>` command to suppress it. Once a column is added to the allowlist it disappears from this section automatically.
-
-![gate retro output](assets/retro.jpg)
-
-Stats are collected by default and written to a local JSONL log on disk — they never leave your machine. Disable with `stats.enabled: false` in config.
-
 ## What gate does NOT protect against
 
 `gate` is a deterministic redaction layer, not a sandbox. Key limitations:
@@ -203,6 +198,16 @@ Stats are collected by default and written to a local JSONL log on disk — they
 - **PII already in the model's context** from prior turns, system prompts, or file reads.
 
 See [THREAT-MODEL.md](THREAT-MODEL.md) for the full attacker model, known bypasses, and recommended configuration for stricter enforcement.
+
+## Protection retrospective
+
+`_gate_summary` reports a single response. `gate retro` aggregates across all of them — total queries seen, PII fields redacted, hit rate, plus a breakdown by tool and PII category. Useful for periodic audits and for confirming the boundary is doing real work.
+
+If any query produced a low-confidence redaction, `gate retro` surfaces a **Low-confidence redactions** section listing each unique warned column and the exact `gate allowlist add <col>` command to suppress it. Once a column is added to the allowlist it disappears from this section automatically.
+
+![gate retro output](assets/retro.jpg)
+
+Stats are collected by default and written to a local JSONL log on disk — they never leave your machine. Disable with `stats.enabled: false` in config.
 
 ## Supported query tools
 
@@ -252,17 +257,6 @@ sudo gate unprotect    # restore direct write access
 ```
 
 Enforced at the OS level across all harnesses (Claude Code, OpenCode, Cursor, GitHub Copilot CLI, Codex CLI, Gemini CLI). Not supported on Windows.
-
-## Supported AI Tools
-
-| AI Tool | Bash Hook | MCP Wrap | Notes |
-|---|:---:|:---:|---|
-| [Claude Code](https://claude.ai/code) | ✅ | ✅ | |
-| [Cursor](https://cursor.sh) | ✅ | ✅ | Restart session after `gate init` to load the hook |
-| [OpenCode](https://opencode.ai) | ✅ | ✅ | Restart session after `gate init` to load the hook |
-| [GitHub Copilot CLI](https://github.com/features/copilot) | ✅ | ✅ | Hook is project-scoped; each developer runs `gate init` once |
-| [Codex CLI](https://github.com/openai/codex) | ✅ | ✅ | After `gate init`, restart session and trust + enable the hook in the Permissions UI |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | ✅ | ✅ | Restart session after `gate init` to load the hook |
 
 ## Documentation
 
