@@ -76,6 +76,7 @@ gate 的取舍：规则无法捕捉非结构化自由文本中的 PII。[威胁�
 | [GitHub Copilot CLI](https://github.com/features/copilot) | ✅ | ✅ | 钩子为项目级；每位开发者运行一次 `gate init` |
 | [Codex CLI](https://github.com/openai/codex) | ✅ | ✅ | 执行 `gate init` 后，重启会话并在 Permissions 界面中信任并启用该钩子 |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | ✅ | ✅ | 执行 `gate init` 后重启会话以加载钩子 |
+| CodeBuddy | ✅ | ✅ | 执行 `gate init` 后重启会话以加载钩子 |
 
 ## 扫描你的 schema
 
@@ -113,9 +114,10 @@ psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INF
    gate init --harness copilot-cli      # GitHub Copilot CLI（项目级，在仓库根目录运行）
    gate init --harness codex            # Codex CLI
    gate init --harness gemini           # Gemini CLI
+   gate init --harness codebuddy        # CodeBuddy
    ```
 
-   加上 `--scope project` 可进行仅项目级的安装。执行 `gate init` 后，重启你的 OpenCode、Cursor 或 Gemini CLI 会话以加载钩子。对于 Codex CLI，重启会话后，在 Trust & Permissions 界面中查看该钩子，将其标记为受信任并启用。对于 Copilot CLI，请将 `.github/hooks/PreToolUse.json` 加入你的仓库的 `.gitignore`——每位开发者需在本地克隆中各自运行一次 `gate init --harness copilot-cli`。
+   加上 `--scope project` 可进行仅项目级的安装。执行 `gate init` 后，重启你的 OpenCode、Cursor、Gemini CLI 或 CodeBuddy 会话以加载钩子。对于 Codex CLI，重启会话后，在 Trust & Permissions 界面中查看该钩子，将其标记为受信任并启用。对于 Copilot CLI，请将 `.github/hooks/PreToolUse.json` 加入你的仓库的 `.gitignore`——每位开发者需在本地克隆中各自运行一次 `gate init --harness copilot-cli`。
 
 4. *（可选）* **注册 MCP 服务器代理**，使 `tools/call` 响应也经过 gate：
 
@@ -126,6 +128,7 @@ psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INF
    gate init --harness copilot-cli --wrap-mcp --yes # GitHub Copilot CLI
    gate init --harness codex --wrap-mcp --yes       # Codex CLI
    gate init --harness gemini --wrap-mcp --yes      # Gemini CLI
+   gate init --harness codebuddy --wrap-mcp --yes   # CodeBuddy
    ```
 
    加上 `--scope project` 可使用项目级的 MCP 配置。对于 Cursor 的项目级 MCP，注册后需在 **Settings → Tools & MCPs** 中重新启用相关服务器。关于 `--servers`、各 harness 的路径以及手动注册单个服务器，见 [docs/mcp.md](docs/mcp.md)。
@@ -256,7 +259,7 @@ sudo gate protect      # 之后任何 enable/disable/config/allowlist 操作都�
 sudo gate unprotect    # 恢复直接写入权限
 ```
 
-在操作系统层面跨所有 harness 强制执行（Claude Code、OpenCode、Cursor、GitHub Copilot CLI、Codex CLI、Gemini CLI）。不支持 Windows。
+在操作系统层面跨所有 harness 强制执行（Claude Code、OpenCode、Cursor、GitHub Copilot CLI、Codex CLI、Gemini CLI、CodeBuddy）。不支持 Windows。
 
 ## 文档
 

@@ -102,9 +102,10 @@ See [docs/scan.md](docs/scan.md) for queries against MySQL, MS SQL Server (inclu
    gate init --harness copilot-cli      # GitHub Copilot CLI (project-scoped, run from repo root)
    gate init --harness codex            # Codex CLI
    gate init --harness gemini           # Gemini CLI
+   gate init --harness codebuddy        # CodeBuddy
    ```
 
-   Add `--scope project` for project-only setup. Restart your OpenCode, Cursor, or Gemini CLI session after `gate init` to load the hook. For Codex CLI, restart the session, then review the hook in the Trust & Permissions UI, mark it as trusted, and enable it. For Copilot CLI, add `.github/hooks/PreToolUse.json` to your repo's `.gitignore` — each developer runs `gate init --harness copilot-cli` once in their local clone.
+   Add `--scope project` for project-only setup. Restart your OpenCode, Cursor, Gemini CLI, or CodeBuddy session after `gate init` to load the hook. For Codex CLI, restart the session, then review the hook in the Trust & Permissions UI, mark it as trusted, and enable it. For Copilot CLI, add `.github/hooks/PreToolUse.json` to your repo's `.gitignore` — each developer runs `gate init --harness copilot-cli` once in their local clone.
 
 4. *(Optional)* **Register MCP server proxies** so `tools/call` responses also pass through gate:
 
@@ -115,6 +116,7 @@ See [docs/scan.md](docs/scan.md) for queries against MySQL, MS SQL Server (inclu
    gate init --harness copilot-cli --wrap-mcp --yes # GitHub Copilot CLI
    gate init --harness codex --wrap-mcp --yes    # Codex CLI
    gate init --harness gemini --wrap-mcp --yes   # Gemini CLI
+   gate init --harness codebuddy --wrap-mcp --yes # CodeBuddy
    ```
 
    Add `--scope project` for project-level MCP config. For Cursor project-scoped MCP, re-enable the servers in **Settings → Tools & MCPs** after registration. See [docs/mcp.md](docs/mcp.md) for `--servers`, per-harness paths, and manual single-server registration.
@@ -208,6 +210,7 @@ Stats are collected by default and written to a local JSONL log on disk — they
 | [GitHub Copilot CLI](https://github.com/features/copilot) | ✅ | ✅ | Hook is project-scoped; each developer runs `gate init` once |
 | [Codex CLI](https://github.com/openai/codex) | ✅ | ✅ | After `gate init`, restart session and trust + enable the hook in the Permissions UI |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | ✅ | ✅ | Restart session after `gate init` to load the hook |
+| CodeBuddy | ✅ | ✅ | Restart session after `gate init` to load the hook |
 
 ## Supported query tools
 
@@ -256,7 +259,7 @@ sudo gate protect      # any future enable/disable/config/allowlist now needs su
 sudo gate unprotect    # restore direct write access
 ```
 
-Enforced at the OS level across all harnesses (Claude Code, OpenCode, Cursor, GitHub Copilot CLI, Codex CLI, Gemini CLI). Not supported on Windows.
+Enforced at the OS level across all harnesses (Claude Code, OpenCode, Cursor, GitHub Copilot CLI, Codex CLI, Gemini CLI, CodeBuddy). Not supported on Windows.
 
 ## Documentation
 
