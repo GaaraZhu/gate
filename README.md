@@ -212,7 +212,7 @@ Stats are collected by default and written to a local JSONL log on disk — they
 | [GitHub Copilot CLI](https://github.com/features/copilot) | ✅ | ✅ | Hook is project-scoped; each developer runs `gate init` once |
 | [Codex CLI](https://github.com/openai/codex) | ✅ | ✅ | After `gate init`, restart session and trust + enable the hook in the Permissions UI |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | ✅ | ✅ | Restart session after `gate init` to load the hook |
-| CodeBuddy | ✅ | ✅ | Restart session after `gate init` to load the hook |
+| [CodeBuddy](https://staging-codebuddy.tencent.com/) | ✅ | ✅ | Restart session after `gate init` to load the hook |
 
 ## Supported query tools
 

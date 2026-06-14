@@ -76,7 +76,7 @@ gate 的取舍：规则无法捕捉非结构化自由文本中的 PII。[威胁�
 | [GitHub Copilot CLI](https://github.com/features/copilot) | ✅ | ✅ | 钩子为项目级；每位开发者运行一次 `gate init` |
 | [Codex CLI](https://github.com/openai/codex) | ✅ | ✅ | 执行 `gate init` 后，重启会话并在 Permissions 界面中信任并启用该钩子 |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | ✅ | ✅ | 执行 `gate init` 后重启会话以加载钩子 |
-| CodeBuddy | ✅ | ✅ | 执行 `gate init` 后重启会话以加载钩子 |
+| [CodeBuddy](https://staging-codebuddy.tencent.com/) | ✅ | ✅ | 执行 `gate init` 后重启会话以加载钩子 |
 
 ## 扫描你的 schema
 
