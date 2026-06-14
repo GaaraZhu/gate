@@ -143,16 +143,22 @@ fn process(stdin: &str, config: &Config, format: Format) -> Option<String> {
             })
             .to_string(),
         ),
-        Format::CodeBuddy => Some(
-            json!({
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "modifiedInput": updated_input,
-                }
-            })
-            .to_string(),
-        ),
+        Format::CodeBuddy => {
+            // Use updatedInput (full tool_input replacement) for CodeBuddy CLI.
+            // CodeBuddy CLI may not support the documented modifiedInput
+            // (partial field override) — use updatedInput which replaces
+            // the entire tool_input and works across harnesses.
+            Some(
+                json!({
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "allow",
+                        "updatedInput": updated_input,
+                    }
+                })
+                .to_string(),
+            )
+        }
         Format::Copilot => Some(
             json!({
                 "permissionDecision": "allow",
@@ -1356,7 +1362,7 @@ mod tests {
     }
 
     #[test]
-    fn codebuddy_format_rewrite_emits_modified_input() {
+    fn codebuddy_format_rewrite_emits_updated_input() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
         let out =
@@ -1368,16 +1374,16 @@ mod tests {
                 .unwrap(),
             "allow"
         );
-        let cmd = v["hookSpecificOutput"]["modifiedInput"]["command"]
+        let cmd = v["hookSpecificOutput"]["updatedInput"]["command"]
             .as_str()
             .unwrap();
         assert!(cmd.starts_with("gate run -- psql"), "got: {cmd}");
-        assert!(v["hookSpecificOutput"].get("updatedInput").is_none());
+        assert!(v["hookSpecificOutput"].get("modifiedInput").is_none());
         assert!(v.get("permissionDecision").is_none());
     }
 
     #[test]
-    fn codebuddy_format_preserves_extra_tool_input_fields() {
+    fn codebuddy_format_updated_input_includes_all_tool_input_fields() {
         let _guard = LOCK.lock().unwrap();
         let config = default_config();
         let input = json!({
@@ -1391,8 +1397,14 @@ mod tests {
         .to_string();
         let out = process_codebuddy(&input, &config).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
+        // updatedInput contains the full tool_input with command overridden,
+        // preserving all other fields like restart.
         assert_eq!(
-            v["hookSpecificOutput"]["modifiedInput"]["restart"],
+            v["hookSpecificOutput"]["updatedInput"]["command"],
+            json!("gate run -- tkpsql --sql 'SELECT 1'")
+        );
+        assert_eq!(
+            v["hookSpecificOutput"]["updatedInput"]["restart"],
             json!(false)
         );
     }
