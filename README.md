@@ -87,6 +87,8 @@ See [docs/scan.md](docs/scan.md) for queries against MySQL, MS SQL Server (inclu
 
    Or grab a binary directly from the [releases page](https://github.com/GaaraZhu/gate/releases).
 
+   On Homebrew 6.0+, third-party taps must be explicitly trusted before their formulae can be installed. If `brew install gate` fails with a trust error, run `brew trust GaaraZhu/gate` and retry.
+
 2. **Create your config** (opens `~/.config/gate/config.yaml` in your editor):
 
    ```bash

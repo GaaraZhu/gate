@@ -99,6 +99,8 @@ psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INF
 
    或直接从 [releases 页面](https://github.com/GaaraZhu/gate/releases) 下载二进制文件。
 
+   在 Homebrew 6.0+ 中，第三方 tap 需要先显式授信才能安装其中的 formula。如果 `brew install gate` 报授信错误，运行 `brew trust GaaraZhu/gate` 后重试。
+
 2. **创建你的配置**（会在编辑器中打开 `~/.config/gate/config.yaml`）：
 
    ```bash
