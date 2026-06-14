@@ -8,6 +8,7 @@ const COPILOT_HOOK_COMMAND: &str = "gate hook --format copilot";
 const CURSOR_HOOK_COMMAND: &str = "gate hook --format cursor";
 const CODEX_HOOK_COMMAND: &str = "gate hook --format codex";
 const GEMINI_HOOK_COMMAND: &str = "gate hook --format gemini";
+const CODEBUDDY_HOOK_COMMAND: &str = "gate hook --format codebuddy";
 
 pub fn run(
     harness: &str,
@@ -79,9 +80,16 @@ pub fn run(
                 };
                 wrap_mcp_claude(&path, filter.as_deref(), yes);
             }
+            "codebuddy" => {
+                let path = match codebuddy_settings_path(scope) {
+                    Ok(p) => p,
+                    Err(e) => exit_with_error(&e),
+                };
+                wrap_mcp_claude(&path, filter.as_deref(), yes);
+            }
             _ => exit_with_error(&format!(
                 "--wrap-mcp is not supported for harness '{harness}'; \
-                 supported: claude-code, opencode, copilot-cli, cursor, codex, gemini"
+                 supported: claude-code, opencode, copilot-cli, cursor, codex, gemini, codebuddy"
             )),
         }
         return;
@@ -137,9 +145,16 @@ pub fn run(
                 };
                 register_mcp_server(&path, server_name, cmd_str);
             }
+            "codebuddy" => {
+                let path = match codebuddy_settings_path(scope) {
+                    Ok(p) => p,
+                    Err(e) => exit_with_error(&e),
+                };
+                register_mcp_server(&path, server_name, cmd_str);
+            }
             _ => exit_with_error(&format!(
                 "MCP registration is not supported for harness '{harness}'; \
-                 supported: claude-code, opencode, copilot-cli, cursor, codex, gemini"
+                 supported: claude-code, opencode, copilot-cli, cursor, codex, gemini, codebuddy"
             )),
         }
         return;
@@ -158,8 +173,9 @@ pub fn run(
         "cursor" => init_cursor(scope),
         "codex" => init_codex(scope),
         "gemini" => init_gemini(scope),
+        "codebuddy" => init_codebuddy(scope),
         _ => exit_with_error(&format!(
-            "unsupported harness '{harness}'; supported: claude-code, opencode, copilot-cli, cursor, codex, gemini. \
+            "unsupported harness '{harness}'; supported: claude-code, opencode, copilot-cli, cursor, codex, gemini, codebuddy. \
              Usage: gate init --harness <harness>"
         )),
     }
@@ -1294,6 +1310,81 @@ fn normalize_gemini_settings(settings: &mut Value) {
     if !before_tool.is_array() {
         *before_tool = json!([]);
     }
+}
+
+// ── CodeBuddy hook installation ──────────────────────────────────────────────
+
+/// Resolve the CodeBuddy settings path for the given scope.
+/// "project" → `.codebuddy/settings.json`; anything else ("user", "global") → `~/.codebuddy/settings.json`.
+pub(crate) fn codebuddy_settings_path(scope: &str) -> Result<PathBuf, String> {
+    if scope == "project" {
+        return Ok(PathBuf::from(".codebuddy").join("settings.json"));
+    }
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "cannot resolve home directory: set HOME or USERPROFILE".to_string())?;
+    Ok(PathBuf::from(home).join(".codebuddy").join("settings.json"))
+}
+
+fn init_codebuddy(scope: &str) {
+    let path = match codebuddy_settings_path(scope) {
+        Ok(p) => p,
+        Err(e) => exit_with_error(&format!("cannot resolve codebuddy settings path: {e}")),
+    };
+    run_codebuddy_with_path(&path);
+}
+
+fn run_codebuddy_with_path(path: &Path) {
+    let settings = read_settings(path);
+    match insert_codebuddy_hook(settings) {
+        HookInsertResult::AlreadyInstalled => {
+            println!("gate hook is already installed in {}", path.display());
+        }
+        HookInsertResult::Done(updated) => {
+            write_atomic(path, &updated).unwrap_or_else(|e| {
+                exit_with_error(&format!("failed to write {}: {e}", path.display()))
+            });
+            println!("gate hook installed in {}", path.display());
+            println!("Run `gate config` to define which tools to intercept.");
+        }
+    }
+}
+
+fn new_codebuddy_hook_entry() -> Value {
+    json!({
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": CODEBUDDY_HOOK_COMMAND }]
+    })
+}
+
+fn insert_codebuddy_hook(mut settings: Value) -> HookInsertResult {
+    normalize_settings(&mut settings);
+
+    let already = {
+        let arr = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        arr.iter().any(|entry| {
+            entry
+                .get("hooks")
+                .and_then(|h| h.as_array())
+                .map(|hooks| {
+                    hooks.iter().any(|h| {
+                        h.get("command").and_then(|c| c.as_str()) == Some(CODEBUDDY_HOOK_COMMAND)
+                    })
+                })
+                .unwrap_or(false)
+        })
+    };
+    if already {
+        return HookInsertResult::AlreadyInstalled;
+    }
+
+    {
+        let arr = settings["hooks"]["PreToolUse"].as_array_mut().unwrap();
+        arr.retain(|entry| !entry_has_gate_hook(entry));
+        arr.push(new_codebuddy_hook_entry());
+    }
+
+    HookInsertResult::Done(settings)
 }
 
 /// Walk up from CWD to find the root of the current git repository.
@@ -2704,5 +2795,101 @@ mod tests {
     fn gemini_entry_has_gate_hook_ignores_other_entries() {
         let entry = json!({ "matcher": "^read_file$", "hooks": [{ "type": "command", "command": "other-hook" }] });
         assert!(!gemini_entry_has_gate_hook(&entry));
+    }
+
+    // ── codebuddy hook tests ─────────────────────────────────────────────────
+
+    fn tmp_codebuddy_path() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        (dir, path)
+    }
+
+    #[test]
+    fn codebuddy_settings_path_global_uses_home() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let saved = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", "/test/home") };
+        let path = codebuddy_settings_path("global").unwrap();
+        match saved {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(path, PathBuf::from("/test/home/.codebuddy/settings.json"));
+    }
+
+    #[test]
+    fn codebuddy_settings_path_project_is_relative() {
+        let path = codebuddy_settings_path("project").unwrap();
+        assert_eq!(path, PathBuf::from(".codebuddy/settings.json"));
+    }
+
+    #[test]
+    fn codebuddy_creates_hook_from_empty_file() {
+        let (_dir, path) = tmp_codebuddy_path();
+        run_codebuddy_with_path(&path);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(
+            arr[0]["hooks"][0]["command"].as_str().unwrap(),
+            CODEBUDDY_HOOK_COMMAND
+        );
+        assert_eq!(arr[0]["matcher"].as_str().unwrap(), "Bash");
+    }
+
+    #[test]
+    fn codebuddy_idempotent_on_second_run() {
+        let (_dir, path) = tmp_codebuddy_path();
+        run_codebuddy_with_path(&path);
+        run_codebuddy_with_path(&path);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        let gate_count = arr.iter().filter(|e| entry_has_gate_hook(e)).count();
+        assert_eq!(gate_count, 1);
+    }
+
+    #[test]
+    fn codebuddy_replaces_absolute_path_variant() {
+        let (_dir, path) = tmp_codebuddy_path();
+        let initial = json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "Bash", "hooks": [{ "type": "command", "command": "/usr/local/bin/gate hook --format codebuddy" }] }
+                ]
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&initial).unwrap()).unwrap();
+        run_codebuddy_with_path(&path);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(
+            arr[0]["hooks"][0]["command"].as_str().unwrap(),
+            CODEBUDDY_HOOK_COMMAND
+        );
+    }
+
+    #[test]
+    fn codebuddy_preserves_existing_non_gate_entry() {
+        let (_dir, path) = tmp_codebuddy_path();
+        let initial = json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "Write", "hooks": [{ "type": "command", "command": "other-hook" }] }
+                ]
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&initial).unwrap()).unwrap();
+        run_codebuddy_with_path(&path);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        let cmds: Vec<&str> = arr
+            .iter()
+            .filter_map(|e| e["hooks"][0]["command"].as_str())
+            .collect();
+        assert!(cmds.contains(&"other-hook"));
+        assert!(cmds.contains(&CODEBUDDY_HOOK_COMMAND));
     }
 }

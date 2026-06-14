@@ -9,6 +9,7 @@ use std::io::{self, Read};
 
 enum Format {
     ClaudeCode,
+    CodeBuddy,
     Copilot,
     Cursor,
     Codex,
@@ -18,13 +19,14 @@ enum Format {
 pub fn run(format: &str) {
     let fmt = match format {
         "claude-code" => Format::ClaudeCode,
+        "codebuddy" => Format::CodeBuddy,
         "copilot" => Format::Copilot,
         "cursor" => Format::Cursor,
         "codex" => Format::Codex,
         "gemini" => Format::Gemini,
         _ => {
             eprintln!(
-                "gate hook: unknown format '{format}'; supported: claude-code, copilot, cursor, codex, gemini"
+                "gate hook: unknown format '{format}'; supported: claude-code, codebuddy, copilot, cursor, codex, gemini"
             );
             std::process::exit(1);
         }
@@ -141,6 +143,16 @@ fn process(stdin: &str, config: &Config, format: Format) -> Option<String> {
             })
             .to_string(),
         ),
+        Format::CodeBuddy => Some(
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "modifiedInput": updated_input,
+                }
+            })
+            .to_string(),
+        ),
         Format::Copilot => Some(
             json!({
                 "permissionDecision": "allow",
@@ -173,6 +185,14 @@ fn block_response(message: &str, format: &Format) -> String {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "block",
                 "message": message,
+            }
+        })
+        .to_string(),
+        Format::CodeBuddy => json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": message,
             }
         })
         .to_string(),
@@ -1299,5 +1319,81 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["permission"].as_str().unwrap(), "allow");
         assert_eq!(v["updated_input"]["restart"], json!(false));
+    }
+
+    // ── codebuddy format tests ────────────────────────────────────────────────
+
+    fn process_codebuddy(stdin: &str, config: &Config) -> Option<String> {
+        process(stdin, config, Format::CodeBuddy)
+    }
+
+    fn is_codebuddy_deny(output: &str) -> bool {
+        let v: Value = serde_json::from_str(output).unwrap();
+        v["hookSpecificOutput"]["permissionDecision"]
+            .as_str()
+            .unwrap_or("")
+            == "deny"
+    }
+
+    #[test]
+    fn codebuddy_format_passthrough_is_none() {
+        let _guard = LOCK.lock().unwrap();
+        let config = default_config();
+        assert!(process_codebuddy(&make_input("ls -la"), &config).is_none());
+    }
+
+    #[test]
+    fn codebuddy_format_blocks_gate_enable() {
+        let _guard = LOCK.lock().unwrap();
+        let config = default_config();
+        let out = process_codebuddy(&make_input("gate enable"), &config).unwrap();
+        assert!(is_codebuddy_deny(&out));
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(v["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .is_some());
+        assert!(v["hookSpecificOutput"].get("message").is_none());
+    }
+
+    #[test]
+    fn codebuddy_format_rewrite_emits_modified_input() {
+        let _guard = LOCK.lock().unwrap();
+        let config = default_config();
+        let out =
+            process_codebuddy(&make_input("psql -c 'SELECT email FROM users'"), &config).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["hookSpecificOutput"]["permissionDecision"]
+                .as_str()
+                .unwrap(),
+            "allow"
+        );
+        let cmd = v["hookSpecificOutput"]["modifiedInput"]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.starts_with("gate run -- psql"), "got: {cmd}");
+        assert!(v["hookSpecificOutput"].get("updatedInput").is_none());
+        assert!(v.get("permissionDecision").is_none());
+    }
+
+    #[test]
+    fn codebuddy_format_preserves_extra_tool_input_fields() {
+        let _guard = LOCK.lock().unwrap();
+        let config = default_config();
+        let input = json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "tkpsql --sql 'SELECT 1'",
+                "restart": false
+            }
+        })
+        .to_string();
+        let out = process_codebuddy(&input, &config).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["hookSpecificOutput"]["modifiedInput"]["restart"],
+            json!(false)
+        );
     }
 }

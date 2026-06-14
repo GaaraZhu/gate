@@ -1,5 +1,5 @@
 use crate::init::{
-    claude_settings_path, codex_hooks_path, copilot_entry_has_gate_hook,
+    claude_settings_path, codebuddy_settings_path, codex_hooks_path, copilot_entry_has_gate_hook,
     cursor_entry_has_gate_hook, cursor_hooks_path, entry_has_gate_hook, find_git_root,
     gemini_entry_has_gate_hook, gemini_settings_path,
 };
@@ -21,6 +21,7 @@ enum Action {
     CursorHook(PathBuf),
     CodexHook(PathBuf),
     GeminiHook(PathBuf),
+    CodeBuddyHook(PathBuf),
     StatsFile(PathBuf),
 }
 
@@ -34,6 +35,7 @@ impl Action {
             Action::CursorHook(p) => format!("Remove gate hook entry from {}", p.display()),
             Action::CodexHook(p) => format!("Remove gate hook entry from {}", p.display()),
             Action::GeminiHook(p) => format!("Remove gate hook entry from {}", p.display()),
+            Action::CodeBuddyHook(p) => format!("Remove gate hook entry from {}", p.display()),
             Action::StatsFile(p) => format!("Delete stats log {}", p.display()),
         }
     }
@@ -93,6 +95,11 @@ fn collect_actions() -> Vec<Action> {
     }
     for scope in &["global", "project"] {
         if let Some(a) = plan_remove_gemini_hook(scope) {
+            actions.push(a);
+        }
+    }
+    for scope in &["global", "project"] {
+        if let Some(a) = plan_remove_codebuddy_hook(scope) {
             actions.push(a);
         }
     }
@@ -234,6 +241,24 @@ fn plan_remove_gemini_hook(scope: &str) -> Option<Action> {
     }
 }
 
+fn plan_remove_codebuddy_hook(scope: &str) -> Option<Action> {
+    let path = codebuddy_settings_path(scope).ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let settings: Value = serde_json::from_str(&contents).ok()?;
+    let arr = settings
+        .get("hooks")
+        .and_then(|h| h.get("PreToolUse"))
+        .and_then(|p| p.as_array())?;
+    if arr.iter().any(entry_has_gate_hook) {
+        Some(Action::CodeBuddyHook(path))
+    } else {
+        None
+    }
+}
+
 fn strip_gemini_gate_hook(settings: &mut Value) -> bool {
     let arr = match settings
         .get_mut("hooks")
@@ -249,6 +274,20 @@ fn strip_gemini_gate_hook(settings: &mut Value) -> bool {
 }
 
 fn strip_codex_gate_hook(settings: &mut Value) -> bool {
+    let arr = match settings
+        .get_mut("hooks")
+        .and_then(|h| h.get_mut("PreToolUse"))
+        .and_then(|p| p.as_array_mut())
+    {
+        Some(a) => a,
+        None => return false,
+    };
+    let before = arr.len();
+    arr.retain(|entry| !entry_has_gate_hook(entry));
+    arr.len() < before
+}
+
+fn strip_codebuddy_gate_hook(settings: &mut Value) -> bool {
     let arr = match settings
         .get_mut("hooks")
         .and_then(|h| h.get_mut("PreToolUse"))
@@ -376,6 +415,27 @@ fn execute_action(action: &Action) {
                 }
             };
             strip_gemini_gate_hook(&mut settings);
+            match write_atomic(path, &settings) {
+                Ok(()) => println!("Removed hook from {}", path.display()),
+                Err(e) => eprintln!("gate: failed to write {}: {e}", path.display()),
+            }
+        }
+        Action::CodeBuddyHook(path) => {
+            let contents = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("gate: failed to read {}: {e}", path.display());
+                    return;
+                }
+            };
+            let mut settings: Value = match serde_json::from_str(&contents) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("gate: failed to parse {}: {e}", path.display());
+                    return;
+                }
+            };
+            strip_codebuddy_gate_hook(&mut settings);
             match write_atomic(path, &settings) {
                 Ok(()) => println!("Removed hook from {}", path.display()),
                 Err(e) => eprintln!("gate: failed to write {}: {e}", path.display()),
