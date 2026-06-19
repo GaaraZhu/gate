@@ -245,6 +245,7 @@ The ones you'll use most:
 | `gate scan` | PII risk report across your schema |
 | `gate allowlist add/remove/list` | Manage column-name false positives |
 | `gate retro` | Protection retrospective — total queries & PII fields redacted, breakdown by tool and PII type/category, hit rate with visual progress bar, and low-confidence warnings with allowlist hints |
+| `gate log [-f]` | Live feed of interception events — see what gate matched, redacted, or blocked in real time. Counts and labels only, never raw command lines or PII |
 | `gate enable` / `gate disable` | Toggle redaction without uninstalling |
 | `gate validate` | Check config for errors before the first session |
 | `gate protect` / `gate unprotect` *(Unix only)* | Transfer config ownership to root |

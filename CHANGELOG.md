@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### 🚀 Features
+
+- Add `gate log` — a live feed of interception events (matched, redacted, passed through, rejected, blocked) for confirming gate is actually working. Counts and labels only, never command lines, SQL text, or PII values. Prints recorded events and exits by default; `-f`/`--follow` keeps watching, like `docker logs -f`
+
 ### 🐛 Bug Fixes
 
 - Fix AU/NZ international phone numbers not matched when `+` is separated from digits by whitespace (e.g. `+ 640220831619`, `+6 40220831619`) — values are now whitespace-stripped before regex matching

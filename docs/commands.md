@@ -13,6 +13,7 @@ Full reference for every `gate` subcommand. Use `gate --help` and `gate <subcomm
 | `gate allowlist remove <col> [col...]` | Remove column names from the allowlist. |
 | `gate allowlist list` | Show the current allowlist. |
 | `gate retro` | Protection retrospective (a.k.a. stats / audit / report). Prints how many queries gate protected and how many PII fields it redacted, with a top-types breakdown. Reads from the on-disk stats log; disable collection with `stats.enabled: false` in config. |
+| `gate log [-f\|--follow] [--json] [--tool <name>] [--path bash\|mcp\|stdin]` | Live feed of interception events — which commands gate matched, redacted, passed through, rejected, or blocked. Counts and labels only, never command lines, SQL text, or PII values. Prints recorded events and exits by default; `-f`/`--follow` keeps watching for new ones, like `docker logs -f`. `--tool`/`--path` filter the feed; `--json` emits raw event lines. |
 | `gate enable` | Enable PII redaction (sets `enabled: true` in config). |
 | `gate disable` | Disable PII redaction (sets `enabled: false` in config). |
 | `gate validate` | Check config for errors and warnings. |
