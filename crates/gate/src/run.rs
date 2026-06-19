@@ -4,6 +4,7 @@ use std::time::Instant;
 use crate::command;
 use common::config::Config;
 use common::error::exit_with_error;
+use common::event_log::{self, LogEvent};
 use common::redactor::{redact_with_stats, RedactPlan};
 use common::stats;
 use gate1::{build_plan, extract_columns};
@@ -87,6 +88,11 @@ pub fn run(args: Vec<String>, verbose: bool) {
     plan.verbose = verbose;
 
     if plan.rejected {
+        let _ = event_log::record(&LogEvent::rejected(
+            "bash",
+            &basename,
+            "denylisted column selected directly, or SELECT * under wildcard_policy=reject",
+        ));
         exit_with_error(
             "query rejected: the query selects a denylisted PII column or uses SELECT *. \
              Rewrite the query to select only the columns you need, or set \
@@ -157,9 +163,19 @@ pub fn run(args: Vec<String>, verbose: bool) {
     };
 
     // Gate 2
+    let mut forced_columns: Vec<String> = plan.forced_columns.keys().cloned().collect();
+    forced_columns.sort();
     let redact_start = Instant::now();
     let (redacted, redact_stats) = redact_with_stats(payload, &plan, &config.pii);
     let overhead_us = gate1_us + redact_start.elapsed().as_micros() as u64;
+
+    let _ = event_log::record(&LogEvent::outcome(
+        "bash",
+        &basename,
+        &redact_stats,
+        overhead_us,
+        forced_columns,
+    ));
 
     if config.stats.enabled {
         let event = stats::Event::now(
@@ -208,6 +224,14 @@ fn redact_stdin(verbose: bool, config: &Config) {
     let redact_start = Instant::now();
     let (redacted, redact_stats) = redact_with_stats(payload, &plan, &config.pii);
     let overhead_us = redact_start.elapsed().as_micros() as u64;
+
+    let _ = event_log::record(&LogEvent::outcome(
+        "stdin",
+        "stdin",
+        &redact_stats,
+        overhead_us,
+        vec![],
+    ));
 
     if config.stats.enabled {
         let event = stats::Event::now(

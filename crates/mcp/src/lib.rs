@@ -118,15 +118,11 @@ pub fn run(name: Option<String>, upstream: Vec<String>) -> ! {
                                     );
                                     Message::Json(make_oversized_error(&v, size, max_payload_bytes))
                                 } else {
-                                    let record_as = if stats_enabled {
-                                        Some(server_name_clone.as_str())
-                                    } else {
-                                        None
-                                    };
                                     Message::Json(redact_tools_call_response(
                                         v,
                                         &config_clone,
-                                        record_as,
+                                        server_name_clone.as_str(),
+                                        stats_enabled,
                                     ))
                                 }
                             } else {

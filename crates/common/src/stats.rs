@@ -11,10 +11,10 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::append_log;
 
 /// One recorded redaction event. Serialised as a single JSONL line.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,61 +143,9 @@ fn home_dir() -> Result<PathBuf> {
 /// in callers that want to surface it (most callers should just `let _ =`).
 pub fn record(event: &Event) -> Result<()> {
     let path = stats_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-
     let mut line = serde_json::to_string(event)?;
     line.push('\n');
-
-    write_with_retry(&path, line.as_bytes())
-}
-
-#[cfg(unix)]
-fn write_with_retry(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(bytes)?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn write_with_retry(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
-    // Windows antivirus / search-indexer software can briefly hold an exclusive
-    // lock on a file it's scanning, causing `OpenOptions::open` to return
-    // ERROR_SHARING_VIOLATION (raw OS error 32). Retry a few times with tiny
-    // backoff; if we still can't open, give up silently.
-    const MAX_TRIES: u32 = 3;
-    const BACKOFF_MS: u64 = 5;
-    const ERROR_SHARING_VIOLATION: i32 = 32;
-
-    for attempt in 0..MAX_TRIES {
-        match OpenOptions::new().create(true).append(true).open(path) {
-            Ok(mut file) => {
-                file.write_all(bytes)?;
-                return Ok(());
-            }
-            Err(e) => {
-                if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION) && attempt + 1 < MAX_TRIES {
-                    std::thread::sleep(std::time::Duration::from_millis(BACKOFF_MS));
-                    continue;
-                }
-                return Err(e.into());
-            }
-        }
-    }
-    Err(anyhow!("write_with_retry: exhausted retries"))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn write_with_retry(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    file.write_all(bytes)?;
-    Ok(())
+    append_log::append(&path, line.as_bytes())
 }
 
 #[cfg(test)]

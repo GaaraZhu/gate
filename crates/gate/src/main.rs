@@ -62,6 +62,7 @@ mod hook;
 mod init;
 mod init_opencode;
 mod list;
+mod log;
 mod protect;
 mod retro;
 mod run;
@@ -148,6 +149,23 @@ enum Commands {
         about = "Show a protection retrospective: how many queries gate protected and how many PII fields it redacted (also known as stats/audit/report)"
     )]
     Retro,
+    #[command(
+        about = "Show interception events: which commands gate matched, redacted, passed through, or blocked.\nCounts and labels only — never command lines, SQL text, or PII values.\nBy default prints recorded events and exits; use --follow to keep watching for new ones."
+    )]
+    Log {
+        /// Keep watching for new events after printing existing ones (like `docker logs -f`)
+        #[arg(short, long)]
+        follow: bool,
+        /// Emit raw JSON event lines instead of human-readable text
+        #[arg(long)]
+        json: bool,
+        /// Only show events for this tool/server name (e.g. psql)
+        #[arg(long)]
+        tool: Option<String>,
+        /// Only show events from this path: bash, mcp, or stdin
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// Enable PII redaction (sets enabled: true in config)
     Enable,
     /// Disable PII redaction (sets enabled: false in config)
@@ -255,6 +273,12 @@ fn main() {
             AllowlistAction::List => allowlist::run(allowlist::Action::List),
         },
         Commands::Retro => retro::run(),
+        Commands::Log {
+            follow,
+            json,
+            tool,
+            path,
+        } => log::run(json, tool, path, follow),
         Commands::Enable => enable_disable::run(true),
         Commands::Disable => enable_disable::run(false),
         Commands::Validate => validate::run(),

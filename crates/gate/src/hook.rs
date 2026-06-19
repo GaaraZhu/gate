@@ -4,6 +4,7 @@
 // piping to stdin. No opencode-specific Rust path is needed.
 use crate::command;
 use common::config::Config;
+use common::event_log::{self, LogEvent};
 use serde_json::{json, Value};
 use std::io::{self, Read};
 
@@ -81,6 +82,11 @@ fn process(stdin: &str, config: &Config, format: Format) -> Option<String> {
         match tokens.get(idx + 1).map(String::as_str) {
             Some("run") => return None,
             Some("disable") | Some("enable") => {
+                let _ = event_log::record(&LogEvent::blocked(
+                    "bash",
+                    "gate",
+                    "self-protection: gate enable/disable is blocked inside an agent harness",
+                ));
                 return Some(block_response(
                     "gate self-protection: gate enable/disable is blocked inside an agent harness.",
                     &format,
@@ -97,6 +103,8 @@ fn process(stdin: &str, config: &Config, format: Format) -> Option<String> {
         command::ToolMatch::Nested { basename } => basename,
     };
     let tool_config = config.tools.get(basename)?;
+
+    let _ = event_log::record(&LogEvent::intercepted("bash", basename));
 
     // For nested invocations (tool inside `sh -c "..."`) skip json_tool/pipe rewriting —
     // the helper binaries may not exist in the target environment (container/pod).
@@ -1407,5 +1415,64 @@ mod tests {
             v["hookSpecificOutput"]["updatedInput"]["restart"],
             json!(false)
         );
+    }
+
+    // ── gate log event emission ─────────────────────────────────────────────
+
+    fn with_log_path<F: FnOnce(&std::path::Path)>(f: F) {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        drop(tmp);
+        unsafe { std::env::set_var("GATE_LOG_PATH", &path) };
+        f(&path);
+        unsafe { std::env::remove_var("GATE_LOG_PATH") };
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn read_log_events(path: &std::path::Path) -> Vec<common::event_log::LogEvent> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    #[test]
+    fn matched_tool_emits_intercepted_event() {
+        let _guard = LOCK.lock().unwrap();
+        with_log_path(|log_path| {
+            let config = default_config();
+            process_cc(
+                &make_input("tkpsql --sql 'SELECT email FROM users'"),
+                &config,
+            );
+            let events = read_log_events(log_path);
+            assert!(events
+                .iter()
+                .any(|e| e.outcome == "intercepted" && e.tool == "tkpsql"));
+        });
+    }
+
+    #[test]
+    fn unmatched_command_emits_no_log_event() {
+        let _guard = LOCK.lock().unwrap();
+        with_log_path(|log_path| {
+            let config = default_config();
+            process_cc(&make_input("ls -la"), &config);
+            assert!(read_log_events(log_path).is_empty());
+        });
+    }
+
+    #[test]
+    fn self_protection_block_emits_blocked_event() {
+        let _guard = LOCK.lock().unwrap();
+        with_log_path(|log_path| {
+            let config = default_config();
+            process_cc(&make_input("gate disable"), &config);
+            let events = read_log_events(log_path);
+            assert!(events
+                .iter()
+                .any(|e| e.outcome == "blocked" && e.tool == "gate"));
+        });
     }
 }

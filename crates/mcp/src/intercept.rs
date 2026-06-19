@@ -1,4 +1,5 @@
 use common::config::PiiConfig;
+use common::event_log::{self, LogEvent};
 use common::redactor::{redact_with_stats, RedactPlan};
 use common::stats;
 use serde_json::Value;
@@ -81,16 +82,17 @@ pub fn make_oversized_error(msg: &Value, size: usize, limit: usize) -> Value {
 /// checks catch PII in plain-text items. A `_gate_summary` block is attached
 /// to `result` by the existing `redact()` machinery.
 ///
-/// When `record_as = Some(server_name)`, also appends an event to the
-/// `gate retro` stats log labelled with that server name. Pass `None` to
-/// skip stats recording (used by tests; production callers pass the
-/// harness's logical server name).
+/// Always appends an event to the `gate log` feed labelled with
+/// `server_name` (counts/labels only, never values). When `record_stats` is
+/// true and at least one field was redacted, also appends to the `gate
+/// retro` stats log.
 ///
 /// Fails closed: if the redactor panics, returns an MCP error response.
 pub fn redact_tools_call_response(
     mut msg: Value,
     config: &PiiConfig,
-    record_as: Option<&str>,
+    server_name: &str,
+    record_stats: bool,
 ) -> Value {
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -111,8 +113,15 @@ pub fn redact_tools_call_response(
 
     match redact_result {
         Ok((redacted, stats_out)) => {
-            if let (Some(server_name), Some((rs, overhead_us))) = (record_as, stats_out) {
-                if rs.total > 0 {
+            if let Some((rs, overhead_us)) = stats_out {
+                let _ = event_log::record(&LogEvent::outcome(
+                    "mcp",
+                    server_name,
+                    &rs,
+                    overhead_us,
+                    vec![],
+                ));
+                if record_stats && rs.total > 0 {
                     let event = stats::Event::now(
                         "mcp",
                         server_name,

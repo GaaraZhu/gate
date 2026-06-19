@@ -48,13 +48,24 @@ fn no_config() -> String {
 }
 
 fn send_and_collect(server: &str, config: &str, requests: &[&str]) -> Vec<String> {
-    let mut child = Command::new(BIN)
-        .args(["mcp", "--", server])
+    send_and_collect_log(server, config, requests, None)
+}
+
+fn send_and_collect_log(
+    server: &str,
+    config: &str,
+    requests: &[&str],
+    log_path: Option<&str>,
+) -> Vec<String> {
+    let mut cmd = Command::new(BIN);
+    cmd.args(["mcp", "--", server])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .env("GATE_CONFIG", config)
-        .spawn()
-        .unwrap();
+        .env("GATE_CONFIG", config);
+    if let Some(p) = log_path {
+        cmd.env("GATE_LOG_PATH", p);
+    }
+    let mut child = cmd.spawn().unwrap();
 
     let mut stdin = child.stdin.take().unwrap();
     let stdout_pipe = child.stdout.take().unwrap();
@@ -207,4 +218,36 @@ fn oversized_payload_returns_error() {
         "error message should mention max_payload_bytes; resp[1]={}",
         lines[1]
     );
+}
+
+#[test]
+fn redaction_appends_log_event_without_pii() {
+    let dir = tmp();
+    let server = pii_server(&dir);
+    let config = no_config();
+    let log_path = dir
+        .path()
+        .join("events.jsonl")
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let init_req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}"#;
+    let tool_req = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"sql":"SELECT email FROM users"}}}"#;
+
+    send_and_collect_log(&server, &config, &[init_req, tool_req], Some(&log_path));
+
+    let events: Vec<serde_json::Value> = fs::read_to_string(&log_path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let ev = events
+        .iter()
+        .find(|e| e["path"] == "mcp")
+        .expect("expected an mcp log event");
+    assert_eq!(ev["outcome"], "redacted");
+    assert_eq!(ev["fields_redacted"], 1);
+    let raw = serde_json::to_string(ev).unwrap();
+    assert!(!raw.contains("alice@example.com"));
 }

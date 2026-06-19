@@ -42,6 +42,31 @@ fn redact_run(config: &str, tool: &str, extra: &[&str]) -> std::process::Output 
         .unwrap()
 }
 
+fn redact_run_log(
+    config: &str,
+    tool: &str,
+    extra: &[&str],
+    log_path: &str,
+) -> std::process::Output {
+    Command::new(BIN)
+        .arg("run")
+        .arg("--")
+        .arg(tool)
+        .args(extra)
+        .env("GATE_CONFIG", config)
+        .env("GATE_LOG_PATH", log_path)
+        .output()
+        .unwrap()
+}
+
+fn read_log_events(path: &str) -> Vec<serde_json::Value> {
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
 fn stdout(o: &std::process::Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
@@ -549,4 +574,105 @@ fn databricks_json_sql_path_extraction() {
         v["result"]["data_array"][0][1], "[PII:email]",
         "email should be redacted"
     );
+}
+
+// ── gate log event emission ───────────────────────────────────────────────
+
+/// A redaction outcome must be appended to the log feed with the right
+/// outcome, tool, and field count — no values, no SQL.
+#[test]
+fn redacted_outcome_appended_to_log_feed() {
+    let dir = tmp();
+    let tool = write_script(
+        &dir,
+        "fake-tkpsql",
+        r#"echo '{"rows":[{"id":1,"email":"alice@example.com"}],"count":1}'"#,
+    );
+    let config = write_config(&dir, "tools:\n  fake-tkpsql:\n    sql_arg: \"--sql\"\n");
+    let log_path = dir
+        .path()
+        .join("events.jsonl")
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let out = redact_run_log(
+        &config,
+        &tool,
+        &["--sql", "SELECT id, email FROM users"],
+        &log_path,
+    );
+    assert_eq!(exit_code(&out), 0);
+
+    let events = read_log_events(&log_path);
+    let ev = events
+        .iter()
+        .find(|e| e["outcome"] == "redacted")
+        .expect("expected a redacted log event");
+    assert_eq!(ev["tool"], "fake-tkpsql");
+    assert_eq!(ev["path"], "bash");
+    assert_eq!(ev["fields_redacted"], 1);
+    assert_eq!(ev["types"]["email"], 1);
+    // Never the raw value or the SQL text.
+    let raw = serde_json::to_string(ev).unwrap();
+    assert!(!raw.contains("alice@example.com"));
+    assert!(!raw.contains("SELECT"));
+}
+
+/// A clean query (no PII matched) must record a passthrough outcome, not redacted.
+#[test]
+fn passthrough_outcome_appended_when_no_pii_found() {
+    let dir = tmp();
+    let tool = write_script(&dir, "fake-tool", r#"echo '{"id":1,"count":42}'"#);
+    let config = write_config(&dir, "tools:\n  fake-tool:\n    sql_arg: \"--sql\"\n");
+    let log_path = dir
+        .path()
+        .join("events.jsonl")
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let out = redact_run_log(&config, &tool, &["--sql", "SELECT id, count"], &log_path);
+    assert_eq!(exit_code(&out), 0);
+
+    let events = read_log_events(&log_path);
+    let ev = events
+        .iter()
+        .find(|e| e["tool"] == "fake-tool")
+        .expect("expected a log event for fake-tool");
+    assert_eq!(ev["outcome"], "passthrough");
+    assert_eq!(ev["fields_redacted"], 0);
+}
+
+/// Gate 1 rejection must record a `rejected` log event with a PII-free detail,
+/// distinct from the `error` JSON written to stdout.
+#[test]
+fn rejected_outcome_appended_to_log_feed() {
+    let dir = tmp();
+    let tool = write_script(
+        &dir,
+        "fake-tkpsql",
+        r#"echo '{"rows":[{"email":"alice@example.com"}]}'"#,
+    );
+    let config = write_config(
+        &dir,
+        "tools:\n  fake-tkpsql:\n    sql_arg: \"--sql\"\npii:\n  wildcard_policy: reject\n",
+    );
+    let log_path = dir
+        .path()
+        .join("events.jsonl")
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let out = redact_run_log(&config, &tool, &["--sql", "SELECT * FROM users"], &log_path);
+    assert_eq!(exit_code(&out), 1);
+
+    let events = read_log_events(&log_path);
+    let ev = events
+        .iter()
+        .find(|e| e["outcome"] == "rejected")
+        .expect("expected a rejected log event");
+    assert_eq!(ev["tool"], "fake-tkpsql");
+    assert!(!ev["detail"].as_str().unwrap().is_empty());
 }
