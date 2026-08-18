@@ -136,9 +136,8 @@ Personal config (`~/.config/gate/config.yaml`) doesn't travel with the repo — 
 gate export                          # writes personal config's tools/patterns/thresholds into .gate/config.yaml
 git add .gate/config.yaml && git commit -m "add gate team config"
 
-# Everyone else:
+# Everyone else (after gate init from the Quickstart above):
 git clone <repo>
-gate init                            # installs the harness hook
 gate config --sync                   # scaffolds/picks up .gate/config.yaml, merges it into personal config
 ```
 

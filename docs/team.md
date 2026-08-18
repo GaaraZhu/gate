@@ -57,11 +57,12 @@ You can hand-edit `.gate/config.yaml` directly instead of (or after) exporting �
 
 ```bash
 git clone <repo>
-gate init            # installs the harness hook
 gate config --sync   # scaffolds/picks up .gate/config.yaml, merges it into personal config
 ```
 
-`gate init` only ever touches harness hook registration. `gate config --sync` is the command for `.gate/config.yaml` itself, and does two things:
+(You'll also run `gate init` to register the harness hook — see the main README — but that's a separate, unrelated step; `gate init` never touches `.gate/config.yaml`.)
+
+`gate config --sync` does two things:
 
 1. **Ensures `.gate/config.yaml` exists.** If the repo doesn't have one yet, it writes a blank, commented starter. If one already exists, it's left alone — team config, once committed, is edited by hand and reviewed like any other file in the repo.
 2. **Merges it into your personal config.** The fields above are merged into `~/.config/gate/config.yaml` on disk, using the same rules as the table above (a project pattern is added, a higher project threshold wins, etc.). This is additive and idempotent — running `gate config --sync` again with no changes to `.gate/config.yaml` does nothing and prints nothing.

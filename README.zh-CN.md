@@ -148,9 +148,8 @@ psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INF
 gate export                          # 将个人配置中的 tools/patterns/thresholds 写入 .gate/config.yaml
 git add .gate/config.yaml && git commit -m "add gate team config"
 
-# 其他所有人：
+# 其他所有人（在上面快速上手中的 gate init 之后）：
 git clone <repo>
-gate init                            # 安装钩子
 gate config --sync                   # 创建/拉取 .gate/config.yaml，并将其合并进个人配置
 ```
 
