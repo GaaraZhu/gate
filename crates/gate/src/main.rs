@@ -86,7 +86,7 @@ struct Cli {
 enum Commands {
     // ── Setup ────────────────────────────────────────────────────────────────
     #[command(
-        about = "Register the PreToolUse hook in the agent harness settings.\nWith --wrap-mcp, converts existing MCP servers to gate mcp proxies (dry-run by default; use --yes to apply).\nWith --mcp, registers a single gate mcp proxy entry for a named MCP server.\nAlso ensures .gate/config.yaml exists (team-shared project config), creating a blank starter if missing, and merges it into your personal config so team protections apply even when your shell later leaves this project."
+        about = "Register the PreToolUse hook in the agent harness settings.\nWith --wrap-mcp, converts existing MCP servers to gate mcp proxies (dry-run by default; use --yes to apply).\nWith --mcp, registers a single gate mcp proxy entry for a named MCP server."
     )]
     Init {
         /// Agent harness to install the hook into
@@ -115,7 +115,9 @@ enum Commands {
         about = "Export your personal config into .gate/config.yaml so it can be committed and shared with the team.\nAlways overwrites an existing team config — it's git-tracked, so commit before re-running if you want a rollback point."
     )]
     Export,
-    /// Manage the gate config file
+    #[command(
+        about = "Manage the gate config file.\nWith --sync, ensures .gate/config.yaml exists (team-shared project config, blank starter if missing) and merges it into your personal config — non-interactive, safe inside an agent harness. Re-run after a git pull to pick up team config changes."
+    )]
     Config {
         /// Print the resolved config file path and exit
         #[arg(long)]
@@ -126,6 +128,9 @@ enum Commands {
         /// Write a starter config if missing, then exit (no editor)
         #[arg(long = "init-only")]
         init_only: bool,
+        /// Ensure .gate/config.yaml exists and merge it into personal config, then exit (no editor)
+        #[arg(long)]
+        sync: bool,
     },
     // ── Daily use ────────────────────────────────────────────────────────────
     #[command(
@@ -264,7 +269,8 @@ fn main() {
             path,
             print,
             init_only,
-        } => config_cmd::run(path, print, init_only),
+            sync,
+        } => config_cmd::run(path, print, init_only, sync),
         Commands::Scan {
             verbose,
             json,

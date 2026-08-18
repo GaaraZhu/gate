@@ -26,19 +26,6 @@ pub fn run(
         );
     }
 
-    // Team config handling is orthogonal to the harness-hook install below: every
-    // `gate init`, in any mode, ensures .gate/config.yaml exists when run inside a
-    // git repo (blank starter if missing, left alone if present), then merges it
-    // into the caller's personal config file — additively/tighten-only, so this is
-    // safe and idempotent to run on every `gate init`. This is what makes team
-    // protection apply regardless of where the caller's shell happens to be later:
-    // once merged, it lives in personal config, not just the CWD-discovered project
-    // file.
-    if let Some(repo_root) = find_git_root() {
-        ensure_team_config_scaffold(&repo_root);
-        merge_project_into_personal(&repo_root);
-    }
-
     if mcp.is_some() && wrap_mcp {
         exit_with_error("--mcp and --wrap-mcp cannot be used together");
     }
@@ -337,11 +324,11 @@ fn write_text_atomic(path: &Path, contents: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `gate init`'s scaffolding step: ensures `.gate/config.yaml` exists under
-/// `repo_root`. A missing file is always created (blank starter); an existing
-/// file is always left alone — team config, once it exists, is edited by hand
-/// and reviewed like any other checked-in file.
-fn ensure_team_config_scaffold(repo_root: &Path) {
+/// `gate config --sync`'s scaffolding step: ensures `.gate/config.yaml` exists
+/// under `repo_root`. A missing file is always created (blank starter); an
+/// existing file is always left alone — team config, once it exists, is edited
+/// by hand and reviewed like any other checked-in file.
+pub(crate) fn ensure_team_config_scaffold(repo_root: &Path) {
     let path = repo_root.join(".gate").join("config.yaml");
     if path.exists() {
         return;
@@ -349,7 +336,7 @@ fn ensure_team_config_scaffold(repo_root: &Path) {
     write_team_config(repo_root);
 }
 
-/// `gate init`'s personal-merge step: reads `.gate/config.yaml` under
+/// `gate config --sync`'s personal-merge step: reads `.gate/config.yaml` under
 /// `repo_root` and merges it into the caller's personal config file on disk,
 /// using the same tighten-only rules as the in-memory runtime merge (including
 /// `column_allowlist`, per an explicit choice to accept that a project's
@@ -362,7 +349,7 @@ fn ensure_team_config_scaffold(repo_root: &Path) {
 /// an accepted tradeoff for guaranteeing the merge survives regardless of the
 /// caller's shell CWD later (unlike the in-memory merge, which only applies
 /// while CWD is inside this repo).
-fn merge_project_into_personal(repo_root: &Path) {
+pub(crate) fn merge_project_into_personal(repo_root: &Path) {
     let team_path = repo_root.join(".gate").join("config.yaml");
     let project = match common::config::ProjectConfig::load_from_path(&team_path) {
         Ok(p) => p,

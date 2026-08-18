@@ -3,8 +3,8 @@ use common::error::exit_with_error;
 use common::harness::is_agent_harness;
 use std::path::Path;
 
-pub fn run(show_path: bool, print_config: bool, init_only: bool) {
-    let interactive = !show_path && !print_config && !init_only;
+pub fn run(show_path: bool, print_config: bool, init_only: bool, sync: bool) {
+    let interactive = !show_path && !print_config && !init_only && !sync;
     if is_agent_harness() && (interactive || print_config) {
         exit_with_error("gate config: not available inside an agent harness");
     }
@@ -18,6 +18,11 @@ pub fn run(show_path: bool, print_config: bool, init_only: bool) {
         }
     }
 
+    if sync {
+        run_sync();
+        return;
+    }
+
     let path = match config_path() {
         Ok(p) => p,
         Err(e) => exit_with_error(&format!(
@@ -26,6 +31,20 @@ pub fn run(show_path: bool, print_config: bool, init_only: bool) {
     };
 
     run_with_path(show_path, print_config, init_only, &path);
+}
+
+/// `gate config --sync`: ensures `.gate/config.yaml` exists and merges it into
+/// personal config. Non-interactive and safe inside an agent harness — same
+/// safety profile as `--init-only`.
+fn run_sync() {
+    let repo_root = crate::init::find_git_root().unwrap_or_else(|| {
+        exit_with_error(
+            "gate config --sync must be run inside a git repository \
+             (no .git found in this directory or any parent).",
+        )
+    });
+    crate::init::ensure_team_config_scaffold(&repo_root);
+    crate::init::merge_project_into_personal(&repo_root);
 }
 
 fn run_with_path(show_path: bool, print_config: bool, init_only: bool, path: &Path) {

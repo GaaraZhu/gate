@@ -150,10 +150,11 @@ git add .gate/config.yaml && git commit -m "add gate team config"
 
 # 其他所有人：
 git clone <repo>
-gate init                            # 安装钩子，同时将 .gate/config.yaml 合并进个人配置
+gate init                            # 安装钩子
+gate config --sync                   # 创建/拉取 .gate/config.yaml，并将其合并进个人配置
 ```
 
-合并规则只会收紧防护——项目配置可以提高阈值、新增工具和模式规则，但绝不会削弱防护——但 `column_allowlist` 是一个明确标注的例外。完整的合并规则，以及为什么 `gate init` 会把它写入个人配置而不只是实时读取，见 [docs/team.md](docs/team.md)。
+合并规则只会收紧防护——项目配置可以提高阈值、新增工具和模式规则，但绝不会削弱防护——但 `column_allowlist` 是一个明确标注的例外。完整的合并规则，以及为什么 `gate config --sync` 会把它写入个人配置而不只是实时读取，见 [docs/team.md](docs/team.md)。
 
 ## 工作原理
 
@@ -256,9 +257,9 @@ gate <subcommand> --help       # 任意子命令的详情
 
 | 命令 | 用途 |
 |---|---|
-| `gate init` | 向你的 harness 注册钩子；同时会创建并合并团队配置（见快速上手与团队协作） |
+| `gate init` | 向你的 harness 注册钩子（见快速上手） |
 | `gate export` | 将个人配置写入 `.gate/config.yaml` 以便与团队共享（见团队协作） |
-| `gate config` | 创建并编辑 YAML 配置 |
+| `gate config` | 创建并编辑 YAML 配置；`--sync` 用于拉取团队配置（见团队协作） |
 | `gate scan` | 跨 schema 的 PII 风险报告 |
 | `gate allowlist add/remove/list` | 管理列名误报 |
 | `gate retro` | 防护回顾——总查询数与已脱敏 PII 字段数、按工具和 PII 类型/类别的细分、带可视化进度条的命中率 |

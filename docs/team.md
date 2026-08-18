@@ -31,7 +31,7 @@ It's a **restricted** config — only a subset of fields, and every field is eit
 Every other field can only make protection stricter. `column_allowlist` is different — an entry there tells gate to skip redaction for that column name entirely. Union-merging it means a project config *can* reduce redaction for the whole team. `gate` doesn't hide this:
 
 - `gate export` prints a note listing any allowlist entries it wrote.
-- `gate init`, when it merges an allowlist entry into your personal config, says so explicitly.
+- `gate config --sync`, when it merges an allowlist entry into your personal config, says so explicitly.
 - `gate validate` shows project-sourced allowlist entries in its provenance output.
 
 Review allowlist entries in `.gate/config.yaml` the same way you'd review any other change to a shared file before committing it.
@@ -57,21 +57,24 @@ You can hand-edit `.gate/config.yaml` directly instead of (or after) exporting �
 
 ```bash
 git clone <repo>
-gate init
+gate init            # installs the harness hook
+gate config --sync   # scaffolds/picks up .gate/config.yaml, merges it into personal config
 ```
 
-`gate init` now does two things beyond installing the harness hook, whenever it's run inside a git repository:
+`gate init` only ever touches harness hook registration. `gate config --sync` is the command for `.gate/config.yaml` itself, and does two things:
 
 1. **Ensures `.gate/config.yaml` exists.** If the repo doesn't have one yet, it writes a blank, commented starter. If one already exists, it's left alone — team config, once committed, is edited by hand and reviewed like any other file in the repo.
-2. **Merges it into your personal config.** The fields above are merged into `~/.config/gate/config.yaml` on disk, using the same rules as the table above (a project pattern is added, a higher project threshold wins, etc.). This is additive and idempotent — running `gate init` again with no changes to `.gate/config.yaml` does nothing and prints nothing.
+2. **Merges it into your personal config.** The fields above are merged into `~/.config/gate/config.yaml` on disk, using the same rules as the table above (a project pattern is added, a higher project threshold wins, etc.). This is additive and idempotent — running `gate config --sync` again with no changes to `.gate/config.yaml` does nothing and prints nothing.
 
-Re-run `gate init` any time `.gate/config.yaml` changes (after a `git pull`) to pick up the update.
+`--sync` is non-interactive (unlike plain `gate config`, which opens an editor) and safe to run inside an agent harness — same safety profile as `gate config --init-only`.
+
+Re-run `gate config --sync` any time `.gate/config.yaml` changes (after a `git pull`) to pick up the update.
 
 ### Why merge into personal config instead of just reading the project file live?
 
-`gate` *also* merges `.gate/config.yaml` in-memory on every invocation, purely by walking up from the current directory (the same way git finds `.git`) — so as long as your shell is inside the project when a command runs, you get the merged rules automatically, with no `gate init` needed.
+`gate` *also* merges `.gate/config.yaml` in-memory on every invocation, purely by walking up from the current directory (the same way git finds `.git`) — so as long as your shell is inside the project when a command runs, you get the merged rules automatically, with no `gate config --sync` needed.
 
-The persistent merge exists for the gap that leaves: `gate hook`/`gate run` inherit whatever directory your shell is actually in at that moment. If an agent session `cd`s elsewhere mid-session — into a scratch directory, a different checkout, wherever — and then runs a query, the live directory walk won't find `.gate/config.yaml`, and protection silently falls back to whatever's in personal config alone. Baking the safe fields into personal config once (via `gate init`) means they apply everywhere afterward, independent of the shell's current directory.
+The persistent merge exists for the gap that leaves: `gate hook`/`gate run` inherit whatever directory your shell is actually in at that moment. If an agent session `cd`s elsewhere mid-session — into a scratch directory, a different checkout, wherever — and then runs a query, the live directory walk won't find `.gate/config.yaml`, and protection silently falls back to whatever's in personal config alone. Baking the safe fields into personal config once (via `gate config --sync`) means they apply everywhere afterward, independent of the shell's current directory.
 
 This is why `column_allowlist` is included in the personal merge despite the tradeoff described above: once merged, an allowlist entry from this project applies to *every* project you use `gate` on, not just this one. That's a deliberate, explicit choice — review allowlist entries in `.gate/config.yaml` before committing them, the same as any other config change with team-wide reach.
 
@@ -98,5 +101,5 @@ It also warns if:
 ## What this does NOT include
 
 - **Credentials in project config.** Database creds stay personal (`~/.pgpass`, `.env`, secrets managers) — never put them in `.gate/config.yaml`.
-- **A sync daemon or auto-push/pull.** Git is the distribution mechanism. `gate export` writes the file; `git commit`/`git push`/`git pull` move it around; `gate init` picks it up.
+- **A sync daemon or auto-push/pull.** Git is the distribution mechanism. `gate export` writes the file; `git commit`/`git push`/`git pull` move it around; `gate config --sync` picks it up.
 - **A central server.** Each developer runs their own local `gate`; there's no shared runtime state.

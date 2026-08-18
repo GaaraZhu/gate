@@ -138,10 +138,11 @@ git add .gate/config.yaml && git commit -m "add gate team config"
 
 # Everyone else:
 git clone <repo>
-gate init                            # installs the hook AND merges .gate/config.yaml into personal config
+gate init                            # installs the harness hook
+gate config --sync                   # scaffolds/picks up .gate/config.yaml, merges it into personal config
 ```
 
-The merge is tighten-only — a project config can raise thresholds and add tools/patterns, never weaken protection — with one called-out exception for `column_allowlist`. See [docs/team.md](docs/team.md) for the full merge rules and why `gate init` bakes it into personal config instead of only reading it live.
+The merge is tighten-only — a project config can raise thresholds and add tools/patterns, never weaken protection — with one called-out exception for `column_allowlist`. See [docs/team.md](docs/team.md) for the full merge rules and why `gate config --sync` bakes it into personal config instead of only reading it live.
 
 ## How it works
 
@@ -256,9 +257,9 @@ The ones you'll use most:
 
 | Command | Purpose |
 |---|---|
-| `gate init` | Register the hook with your harness; also scaffolds and picks up team config (see Quickstart and Team setup) |
+| `gate init` | Register the hook with your harness (see Quickstart) |
 | `gate export` | Write your personal config into `.gate/config.yaml` to share with the team (see Team setup) |
-| `gate config` | Create and edit the YAML config |
+| `gate config` | Create and edit the YAML config; `--sync` picks up team config (see Team setup) |
 | `gate scan` | PII risk report across your schema |
 | `gate allowlist add/remove/list` | Manage column-name false positives |
 | `gate retro` | Protection retrospective — total queries & PII fields redacted, breakdown by tool and PII type/category, hit rate with visual progress bar, and low-confidence warnings with allowlist hints |
