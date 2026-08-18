@@ -86,7 +86,7 @@ struct Cli {
 enum Commands {
     // ── Setup ────────────────────────────────────────────────────────────────
     #[command(
-        about = "Register the PreToolUse hook in the agent harness settings.\nWith --wrap-mcp, converts existing MCP servers to gate mcp proxies (dry-run by default; use --yes to apply).\nWith --mcp, registers a single gate mcp proxy entry for a named MCP server."
+        about = "Register the PreToolUse hook in the agent harness settings.\nWith --wrap-mcp, converts existing MCP servers to gate mcp proxies (dry-run by default; use --yes to apply).\nWith --mcp, registers a single gate mcp proxy entry for a named MCP server.\nAlso ensures .gate/config.yaml exists (team-shared project config), creating a blank starter if missing.\nWith --force, resets an existing .gate/config.yaml back to that blank starter."
     )]
     Init {
         /// Agent harness to install the hook into
@@ -110,6 +110,18 @@ enum Commands {
         /// Apply changes (used with --wrap-mcp; default is dry-run)
         #[arg(long)]
         yes: bool,
+        /// Reset an existing .gate/config.yaml to a blank starter (destructive; the
+        /// file is normally left alone once it exists)
+        #[arg(long)]
+        force: bool,
+    },
+    #[command(
+        about = "Export your personal config into .gate/config.yaml so it can be committed and shared with the team.\nRefuses to overwrite an existing team config unless --force is passed."
+    )]
+    Export {
+        /// Overwrite an existing .gate/config.yaml with your personal config
+        #[arg(long)]
+        force: bool,
     },
     /// Manage the gate config file
     Config {
@@ -246,6 +258,7 @@ fn main() {
             wrap_mcp,
             servers,
             yes,
+            force,
         } => init::run(
             harness.as_str(),
             &scope,
@@ -254,7 +267,9 @@ fn main() {
             wrap_mcp,
             servers.as_deref(),
             yes,
+            force,
         ),
+        Commands::Export { force } => init::run_export(force),
         Commands::Config {
             path,
             print,

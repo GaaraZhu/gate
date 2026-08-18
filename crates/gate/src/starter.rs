@@ -50,3 +50,38 @@ pii:
   hash_values: false
   hash_salt: ""     # set a fixed secret for consistent hashes across runs
 "#;
+
+/// Written by `gate init --team` to `.gate/config.yaml`. `{VERSION}` is replaced
+/// with the installing gate version at write time.
+pub const TEAM_STARTER_CONFIG: &str = r#"# Gate team configuration — commit this file to git.
+#
+# Every developer's `gate` merges this over their personal
+# ~/.config/gate/config.yaml. The merge only TIGHTENS protection, never loosens it:
+#   - pii.confidence_threshold, pii.column_name_boost: whichever value is HIGHER wins
+#   - tools, pii.patterns: unioned (this file's entries win on a name collision)
+# Fields that could weaken protection (enabled, redaction format, hashing, etc.)
+# have no effect here — only the fields below are recognized.
+#
+# Run `gate validate` to see the effective merged config and its provenance.
+
+# Minimum gate version required for this project. Older installs get a warning
+# (not a hard block) from `gate hook` and `gate validate`.
+min_gate_version: "{VERSION}"
+
+# Tools every developer on this project should have intercepted, on top of
+# whatever they've configured personally.
+# tools:
+#   tkpsql:
+#     sql_arg: "--sql"
+
+pii:
+  # Floor for the whole team — raise this to tighten; a lower personal value
+  # elsewhere in the org has no effect once this file is committed.
+  confidence_threshold: 0.8
+
+  # Patterns every developer should have, regardless of their personal config.
+  # patterns:
+  #   internal_id:
+  #     regex: '\bID-\d{6}\b'
+  #     confidence: 0.9
+"#;

@@ -10,6 +10,7 @@ const CODEX_HOOK_COMMAND: &str = "gate hook --format codex";
 const GEMINI_HOOK_COMMAND: &str = "gate hook --format gemini";
 const CODEBUDDY_HOOK_COMMAND: &str = "gate hook --format codebuddy";
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     harness: &str,
     scope: &str,
@@ -18,12 +19,21 @@ pub fn run(
     wrap_mcp: bool,
     servers: Option<&str>,
     yes: bool,
+    force: bool,
 ) {
     if is_agent_harness() {
         exit_with_error(
             "gate init is not available inside an agent harness. \
              Run `gate init` in a terminal session outside the agent.",
         );
+    }
+
+    // Team config scaffolding is orthogonal to the harness-hook install below: every
+    // `gate init`, in any mode, ensures .gate/config.yaml exists when run inside a
+    // git repo. Without --force an existing file is left alone (just picked up by
+    // Config::load() as usual); --force resets it to a blank starter.
+    if let Some(repo_root) = find_git_root() {
+        ensure_team_config_scaffold(&repo_root, force);
     }
 
     if mcp.is_some() && wrap_mcp {
@@ -306,6 +316,10 @@ fn is_gate_hook_variant(cmd: &str) -> bool {
 
 fn write_atomic(path: &Path, value: &Value) -> anyhow::Result<()> {
     let json_str = serde_json::to_string_pretty(value)?;
+    write_text_atomic(path, &json_str)
+}
+
+fn write_text_atomic(path: &Path, contents: &str) -> anyhow::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("settings path has no parent directory"))?;
@@ -315,9 +329,134 @@ fn write_atomic(path: &Path, value: &Value) -> anyhow::Result<()> {
         .and_then(|n| n.to_str())
         .ok_or_else(|| anyhow::anyhow!("settings path has no filename"))?;
     let tmp_path = parent.join(format!("{file_name}.gate_tmp"));
-    std::fs::write(&tmp_path, &json_str)?;
+    std::fs::write(&tmp_path, contents)?;
     std::fs::rename(&tmp_path, path)?;
     Ok(())
+}
+
+/// A missing team config can always be written; an existing one only with `force`.
+/// Team config, once it exists, is edited by hand and reviewed like any other
+/// checked-in file, so overwriting it is an explicit opt-in, not the default.
+fn team_config_overwrite_allowed(path: &Path, force: bool) -> bool {
+    !path.exists() || force
+}
+
+/// `gate init`'s scaffolding step: ensures `.gate/config.yaml` exists under
+/// `repo_root`. A missing file is always created (blank starter); an existing
+/// file is left alone unless `force`.
+fn ensure_team_config_scaffold(repo_root: &Path, force: bool) {
+    let path = repo_root.join(".gate").join("config.yaml");
+    if !team_config_overwrite_allowed(&path, force) {
+        return;
+    }
+    write_team_config(repo_root);
+}
+
+/// `gate export`: writes the caller's personal config into `.gate/config.yaml`
+/// so it can be committed and shared with the team. Refuses to overwrite an
+/// existing file unless `force` is set.
+pub fn run_export(force: bool) {
+    let repo_root = find_git_root().unwrap_or_else(|| {
+        exit_with_error(
+            "gate export must be run inside a git repository \
+             (no .git found in this directory or any parent).",
+        )
+    });
+
+    let path = repo_root.join(".gate").join("config.yaml");
+    if !team_config_overwrite_allowed(&path, force) {
+        exit_with_error(&format!(
+            "team config already exists at {} — pass --force to overwrite it with your personal config",
+            path.display()
+        ));
+    }
+
+    let personal = common::config::Config::load()
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to load personal config: {e}")));
+    write_team_config_from_personal(&repo_root, &personal);
+}
+
+/// Writes a blank starter `.gate/config.yaml` under `repo_root`, overwriting
+/// whatever is there. Callers decide whether overwriting is appropriate.
+fn write_team_config(repo_root: &Path) {
+    let path = repo_root.join(".gate").join("config.yaml");
+    let contents =
+        crate::starter::TEAM_STARTER_CONFIG.replace("{VERSION}", env!("CARGO_PKG_VERSION"));
+    write_text_atomic(&path, &contents)
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to write team config: {e}")));
+
+    println!("Wrote team config at {}", path.display());
+    println!("Commit it so the team shares it:");
+    println!("  git add {}", path.display());
+    println!("  git commit -m \"add gate team config\"");
+}
+
+/// Exports `personal` into `.gate/config.yaml` under `repo_root`, overwriting
+/// whatever is there. Only fields `ProjectConfig` can express are carried over
+/// (tools, patterns, thresholds, column_denylist, column_allowlist) — `enabled`,
+/// `action`, `wildcard_policy`, redaction format, hashing, and mcp/stats settings
+/// stay personal, since they're either local/stylistic or (for `enabled`) not
+/// something a project file can set at all. Callers decide whether overwriting is
+/// appropriate.
+fn write_team_config_from_personal(repo_root: &Path, personal: &common::config::Config) {
+    let path = repo_root.join(".gate").join("config.yaml");
+
+    let project = common::config::ProjectConfig {
+        min_gate_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        tools: personal.tools.clone(),
+        pii: common::config::ProjectPiiConfig {
+            patterns: personal.pii.patterns.clone(),
+            confidence_threshold: Some(personal.pii.confidence_threshold),
+            column_name_boost: Some(personal.pii.column_name_boost),
+            column_denylist: personal.pii.column_denylist.clone(),
+            column_allowlist: personal.pii.column_allowlist.clone(),
+        },
+    };
+
+    let body = serde_yaml::to_string(&project)
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to serialize team config: {e}")));
+    let header =
+        "# Gate team configuration — exported from a personal config, commit this file to git.\n\
+        #\n\
+        # Every developer's `gate` merges this over their personal\n\
+        # ~/.config/gate/config.yaml. tools, pii.patterns, and pii.column_denylist are\n\
+        # unioned (added, never removed); pii.confidence_threshold and\n\
+        # pii.column_name_boost take whichever value is HIGHER between this file and a\n\
+        # developer's personal config.\n\
+        #\n\
+        # pii.column_allowlist is the one exception: it's unioned too, but it REDUCES\n\
+        # redaction (columns here skip name-based checks for everyone). Review the list\n\
+        # below before committing — anything here applies to the whole team.\n\
+        #\n\
+        # Run `gate validate` to see the effective merged config and its provenance.\n\n";
+    let contents = format!("{header}{body}");
+
+    write_text_atomic(&path, &contents)
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to write team config: {e}")));
+
+    println!(
+        "Created team config at {} (from personal config)",
+        path.display()
+    );
+    println!(
+        "  Exported: {} tools, {} patterns, {} column_denylist entries, {} column_allowlist entries",
+        project.tools.len(),
+        project.pii.patterns.len(),
+        project.pii.column_denylist.len(),
+        project.pii.column_allowlist.len(),
+    );
+    if !project.pii.column_allowlist.is_empty() {
+        println!(
+            "  Note: column_allowlist entries reduce redaction for the whole team once committed — {}",
+            project.pii.column_allowlist.join(", ")
+        );
+    }
+    println!(
+        "  Not exported (stays personal): enabled, action, wildcard_policy, redaction format, hash_values/hash_salt, mcp, stats"
+    );
+    println!("Review the file, then commit it so the team shares it:");
+    println!("  git add {}", path.display());
+    println!("  git commit -m \"add gate team config\"");
 }
 
 fn register_mcp_server(path: &Path, server_name: &str, cmd_str: &str) {
@@ -2891,5 +3030,154 @@ mod tests {
             .collect();
         assert!(cmds.contains(&"other-hook"));
         assert!(cmds.contains(&CODEBUDDY_HOOK_COMMAND));
+    }
+
+    // ── team config scaffolding (gate init) ─────────────────────────────────
+
+    #[test]
+    fn team_config_created_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        write_team_config(dir.path());
+        let path = dir.path().join(".gate").join("config.yaml");
+        assert!(path.exists());
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("min_gate_version"));
+        assert!(contents.contains(env!("CARGO_PKG_VERSION")));
+        assert!(contents.contains("confidence_threshold"));
+    }
+
+    fn seed_existing_team_config(dir: &tempfile::TempDir) -> PathBuf {
+        let gate_dir = dir.path().join(".gate");
+        std::fs::create_dir_all(&gate_dir).unwrap();
+        let path = gate_dir.join("config.yaml");
+        std::fs::write(&path, "min_gate_version: \"9.9.9\"\n").unwrap();
+        path
+    }
+
+    #[test]
+    fn overwrite_allowed_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".gate").join("config.yaml");
+        assert!(team_config_overwrite_allowed(&path, false));
+        assert!(team_config_overwrite_allowed(&path, true));
+    }
+
+    #[test]
+    fn overwrite_blocked_when_present_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seed_existing_team_config(&dir);
+        assert!(!team_config_overwrite_allowed(&path, false));
+    }
+
+    #[test]
+    fn overwrite_allowed_when_present_with_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seed_existing_team_config(&dir);
+        assert!(team_config_overwrite_allowed(&path, true));
+    }
+
+    #[test]
+    fn ensure_scaffold_leaves_existing_alone_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seed_existing_team_config(&dir);
+        ensure_team_config_scaffold(dir.path(), false);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents, "min_gate_version: \"9.9.9\"\n");
+    }
+
+    #[test]
+    fn ensure_scaffold_overwrites_existing_with_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seed_existing_team_config(&dir);
+        ensure_team_config_scaffold(dir.path(), true);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_ne!(contents, "min_gate_version: \"9.9.9\"\n");
+        assert!(contents.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn team_config_parses_as_valid_project_config() {
+        let dir = tempfile::tempdir().unwrap();
+        write_team_config(dir.path());
+        let path = dir.path().join(".gate").join("config.yaml");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let parsed: common::config::ProjectConfig = serde_yaml::from_str(&contents).unwrap();
+        assert_eq!(
+            parsed.min_gate_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(parsed.pii.confidence_threshold, Some(0.8));
+    }
+
+    // ── gate export ────────────────────────────────────────────────────────
+
+    fn sample_personal_config() -> common::config::Config {
+        use common::config::{Config, ToolConfig};
+        use std::collections::HashMap;
+        let mut tools = HashMap::new();
+        tools.insert(
+            "tkpsql".to_string(),
+            ToolConfig {
+                sql_arg: Some("--sql".to_string()),
+                json_tool: None,
+                json_sql_path: None,
+                pipe: None,
+                extra_args: vec![],
+            },
+        );
+        let mut config = Config {
+            tools,
+            ..Config::default()
+        };
+        config.pii.confidence_threshold = 0.65;
+        config.pii.column_name_boost = 0.2;
+        config.pii.column_denylist = vec!["secret_token".to_string()];
+        config.pii.column_allowlist = vec!["employee_id".to_string()];
+        config
+    }
+
+    #[test]
+    fn team_config_from_personal_exports_tightening_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let personal = sample_personal_config();
+        write_team_config_from_personal(dir.path(), &personal);
+        let path = dir.path().join(".gate").join("config.yaml");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let parsed: common::config::ProjectConfig = serde_yaml::from_str(&contents).unwrap();
+        assert!(parsed.tools.contains_key("tkpsql"));
+        assert_eq!(parsed.pii.confidence_threshold, Some(0.65));
+        assert_eq!(parsed.pii.column_name_boost, Some(0.2));
+        assert_eq!(parsed.pii.column_denylist, vec!["secret_token"]);
+    }
+
+    #[test]
+    fn team_config_from_personal_exports_allowlist_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let personal = sample_personal_config();
+        write_team_config_from_personal(dir.path(), &personal);
+        let path = dir.path().join(".gate").join("config.yaml");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let parsed: common::config::ProjectConfig = serde_yaml::from_str(&contents).unwrap();
+        assert_eq!(parsed.pii.column_allowlist, vec!["employee_id"]);
+    }
+
+    #[test]
+    fn export_blocked_when_team_config_exists_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seed_existing_team_config(&dir);
+        assert!(!team_config_overwrite_allowed(&path, false));
+        // run_export would exit_with_error at this same guard before ever loading
+        // the personal config or calling write_team_config_from_personal.
+    }
+
+    #[test]
+    fn export_allowed_when_team_config_exists_with_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seed_existing_team_config(&dir);
+        assert!(team_config_overwrite_allowed(&path, true));
+        write_team_config_from_personal(dir.path(), &sample_personal_config());
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_ne!(contents, "min_gate_version: \"9.9.9\"\n");
+        assert!(contents.contains("tkpsql"));
     }
 }

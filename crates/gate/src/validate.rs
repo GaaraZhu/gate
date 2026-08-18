@@ -1,4 +1,4 @@
-use common::config::Config;
+use common::config::{version_is_older, Config, Provenance};
 use common::error::exit_with_error;
 use common::patterns::BUILTIN_PATTERNS;
 use regex::Regex;
@@ -8,7 +8,7 @@ use std::path::PathBuf;
 const RAW_CLIENTS: &[&str] = &["mysql", "psql"];
 
 pub fn run() {
-    let config = Config::load().unwrap_or_else(|e| {
+    let (config, provenance) = Config::load_with_provenance().unwrap_or_else(|e| {
         exit_with_error(&format!(
             "failed to load config: {e}. Run `gate config --init-only` to create a starter config."
         ));
@@ -16,6 +16,15 @@ pub fn run() {
 
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+
+    if let Some(floor) = &provenance.min_gate_version {
+        if version_is_older(env!("CARGO_PKG_VERSION"), floor) {
+            warnings.push(format!(
+                "installed gate {} is older than this project's min_gate_version {floor} — upgrade gate",
+                env!("CARGO_PKG_VERSION")
+            ));
+        }
+    }
 
     // Warn on raw clients
     for name in config.tools.keys() {
@@ -63,6 +72,7 @@ pub fn run() {
 
     if errors.is_empty() {
         println!("Config is valid.");
+        print_provenance(&provenance);
     } else {
         for e in &errors {
             eprintln!("error: {e}");
@@ -72,6 +82,72 @@ pub fn run() {
 
     println!();
     report_harness_installations();
+}
+
+fn print_provenance(provenance: &Provenance) {
+    match &provenance.project_path {
+        Some(project_path) => {
+            println!(
+                "  Source: project ({}) + user ({})",
+                project_path.display(),
+                provenance.user_path.display()
+            );
+
+            let project_tools = provenance.project_tool_names.len();
+            let personal_tools = provenance
+                .user_tool_names
+                .iter()
+                .filter(|t| !provenance.project_tool_names.contains(t))
+                .count();
+            let mut names: Vec<&String> = provenance
+                .project_tool_names
+                .iter()
+                .chain(provenance.user_tool_names.iter())
+                .collect();
+            names.sort();
+            names.dedup();
+
+            match provenance.project_confidence_threshold {
+                Some(p) if p > provenance.user_confidence_threshold => {
+                    println!(
+                        "  Effective confidence_threshold: {} (project, overrides user {})",
+                        provenance.effective_confidence_threshold,
+                        provenance.user_confidence_threshold
+                    );
+                }
+                Some(_) => {
+                    println!(
+                        "  Effective confidence_threshold: {} (user; project's value did not raise it)",
+                        provenance.effective_confidence_threshold
+                    );
+                }
+                None => {
+                    println!(
+                        "  Effective confidence_threshold: {} (user)",
+                        provenance.effective_confidence_threshold
+                    );
+                }
+            }
+            println!(
+                "  Effective tools: {} ({project_tools} from project, {personal_tools} personal)",
+                names
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            if !provenance.project_column_allowlist.is_empty() {
+                println!(
+                    "  Project column_allowlist adds {} entries (reduces redaction team-wide): {}",
+                    provenance.project_column_allowlist.len(),
+                    provenance.project_column_allowlist.join(", ")
+                );
+            }
+        }
+        None => {
+            println!("  Source: user ({})", provenance.user_path.display());
+        }
+    }
 }
 
 fn report_harness_installations() {

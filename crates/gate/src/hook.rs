@@ -3,7 +3,7 @@
 // translates opencode's tool.execute.before(input, output) arguments into this same shape before
 // piping to stdin. No opencode-specific Rust path is needed.
 use crate::command;
-use common::config::Config;
+use common::config::{version_is_older, Config};
 use common::event_log::{self, LogEvent};
 use serde_json::{json, Value};
 use std::io::{self, Read};
@@ -36,7 +36,16 @@ pub fn run(format: &str) {
     io::stdin().read_to_string(&mut stdin).unwrap_or_default();
 
     // Load config; on failure passthrough so a bad config never blocks every Bash command
-    let config = Config::load().unwrap_or_default();
+    let (config, provenance) = Config::load_with_provenance().unwrap_or_default();
+
+    if let Some(floor) = &provenance.min_gate_version {
+        if version_is_older(env!("CARGO_PKG_VERSION"), floor) {
+            eprintln!(
+                "gate: installed version {} is older than this project's min_gate_version {floor} — upgrade gate",
+                env!("CARGO_PKG_VERSION")
+            );
+        }
+    }
 
     if let Some(output) = process(&stdin, &config, fmt) {
         print!("{}", output);
