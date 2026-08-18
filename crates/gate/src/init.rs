@@ -10,7 +10,6 @@ const CODEX_HOOK_COMMAND: &str = "gate hook --format codex";
 const GEMINI_HOOK_COMMAND: &str = "gate hook --format gemini";
 const CODEBUDDY_HOOK_COMMAND: &str = "gate hook --format codebuddy";
 
-#[allow(clippy::too_many_arguments)]
 pub fn run(
     harness: &str,
     scope: &str,
@@ -19,7 +18,6 @@ pub fn run(
     wrap_mcp: bool,
     servers: Option<&str>,
     yes: bool,
-    force: bool,
 ) {
     if is_agent_harness() {
         exit_with_error(
@@ -28,12 +26,17 @@ pub fn run(
         );
     }
 
-    // Team config scaffolding is orthogonal to the harness-hook install below: every
+    // Team config handling is orthogonal to the harness-hook install below: every
     // `gate init`, in any mode, ensures .gate/config.yaml exists when run inside a
-    // git repo. Without --force an existing file is left alone (just picked up by
-    // Config::load() as usual); --force resets it to a blank starter.
+    // git repo (blank starter if missing, left alone if present), then merges it
+    // into the caller's personal config file — additively/tighten-only, so this is
+    // safe and idempotent to run on every `gate init`. This is what makes team
+    // protection apply regardless of where the caller's shell happens to be later:
+    // once merged, it lives in personal config, not just the CWD-discovered project
+    // file.
     if let Some(repo_root) = find_git_root() {
-        ensure_team_config_scaffold(&repo_root, force);
+        ensure_team_config_scaffold(&repo_root);
+        merge_project_into_personal(&repo_root);
     }
 
     if mcp.is_some() && wrap_mcp {
@@ -334,42 +337,159 @@ fn write_text_atomic(path: &Path, contents: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A missing team config can always be written; an existing one only with `force`.
-/// Team config, once it exists, is edited by hand and reviewed like any other
-/// checked-in file, so overwriting it is an explicit opt-in, not the default.
-fn team_config_overwrite_allowed(path: &Path, force: bool) -> bool {
-    !path.exists() || force
-}
-
 /// `gate init`'s scaffolding step: ensures `.gate/config.yaml` exists under
 /// `repo_root`. A missing file is always created (blank starter); an existing
-/// file is left alone unless `force`.
-fn ensure_team_config_scaffold(repo_root: &Path, force: bool) {
+/// file is always left alone — team config, once it exists, is edited by hand
+/// and reviewed like any other checked-in file.
+fn ensure_team_config_scaffold(repo_root: &Path) {
     let path = repo_root.join(".gate").join("config.yaml");
-    if !team_config_overwrite_allowed(&path, force) {
+    if path.exists() {
         return;
     }
     write_team_config(repo_root);
 }
 
+/// `gate init`'s personal-merge step: reads `.gate/config.yaml` under
+/// `repo_root` and merges it into the caller's personal config file on disk,
+/// using the same tighten-only rules as the in-memory runtime merge (including
+/// `column_allowlist`, per an explicit choice to accept that a project's
+/// allowlist entries become permanent and global once merged — see
+/// `Config::apply_project`'s doc comment for the tradeoff). Idempotent: only
+/// writes when something actually changed, and only reports what changed.
+///
+/// This rewrites the personal config file wholesale (full struct round-trip via
+/// serde_yaml), which does not preserve hand-added comments or formatting —
+/// an accepted tradeoff for guaranteeing the merge survives regardless of the
+/// caller's shell CWD later (unlike the in-memory merge, which only applies
+/// while CWD is inside this repo).
+fn merge_project_into_personal(repo_root: &Path) {
+    let team_path = repo_root.join(".gate").join("config.yaml");
+    let project = match common::config::ProjectConfig::load_from_path(&team_path) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "gate: failed to parse {} ({e}) — skipping personal config merge",
+                team_path.display()
+            );
+            return;
+        }
+    };
+
+    let personal_path = match common::config::config_path() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "gate: failed to resolve personal config path ({e}) — skipping personal config merge"
+            );
+            return;
+        }
+    };
+    let mut personal = common::config::Config::load_from_path(&personal_path)
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to load personal config: {e}")));
+
+    let threshold_before = personal.pii.confidence_threshold;
+    let boost_before = personal.pii.column_name_boost;
+    let tools_before: std::collections::HashSet<String> = personal.tools.keys().cloned().collect();
+    let patterns_before: std::collections::HashSet<String> =
+        personal.pii.patterns.keys().cloned().collect();
+    let denylist_before: std::collections::HashSet<String> =
+        personal.pii.column_denylist.iter().cloned().collect();
+    let allowlist_before: std::collections::HashSet<String> =
+        personal.pii.column_allowlist.iter().cloned().collect();
+
+    personal.apply_project(&project);
+
+    let threshold_changed = personal.pii.confidence_threshold != threshold_before;
+    let boost_changed = personal.pii.column_name_boost != boost_before;
+    let new = |before: &std::collections::HashSet<String>, after: &[String]| -> Vec<String> {
+        let mut v: Vec<String> = after
+            .iter()
+            .filter(|s| !before.contains(*s))
+            .cloned()
+            .collect();
+        v.sort();
+        v
+    };
+    let mut new_tools: Vec<String> = personal
+        .tools
+        .keys()
+        .filter(|t| !tools_before.contains(*t))
+        .cloned()
+        .collect();
+    new_tools.sort();
+    let new_patterns_list: Vec<String> = {
+        let mut v: Vec<String> = personal
+            .pii
+            .patterns
+            .keys()
+            .filter(|p| !patterns_before.contains(*p))
+            .cloned()
+            .collect();
+        v.sort();
+        v
+    };
+    let new_denylist = new(&denylist_before, &personal.pii.column_denylist);
+    let new_allowlist = new(&allowlist_before, &personal.pii.column_allowlist);
+
+    let changed = threshold_changed
+        || boost_changed
+        || !new_tools.is_empty()
+        || !new_patterns_list.is_empty()
+        || !new_denylist.is_empty()
+        || !new_allowlist.is_empty();
+    if !changed {
+        return;
+    }
+
+    let yaml = serde_yaml::to_string(&personal)
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to serialize personal config: {e}")));
+    write_text_atomic(&personal_path, &yaml)
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to write personal config: {e}")));
+
+    println!(
+        "Merged .gate/config.yaml into personal config at {}",
+        personal_path.display()
+    );
+    if threshold_changed {
+        println!(
+            "  confidence_threshold: {threshold_before} -> {}",
+            personal.pii.confidence_threshold
+        );
+    }
+    if boost_changed {
+        println!(
+            "  column_name_boost: {boost_before} -> {}",
+            personal.pii.column_name_boost
+        );
+    }
+    if !new_tools.is_empty() {
+        println!("  New tools: {}", new_tools.join(", "));
+    }
+    if !new_patterns_list.is_empty() {
+        println!("  New patterns: {}", new_patterns_list.join(", "));
+    }
+    if !new_denylist.is_empty() {
+        println!("  New column_denylist entries: {}", new_denylist.join(", "));
+    }
+    if !new_allowlist.is_empty() {
+        println!(
+            "  New column_allowlist entries — now applies everywhere you use gate, not just this project: {}",
+            new_allowlist.join(", ")
+        );
+    }
+}
+
 /// `gate export`: writes the caller's personal config into `.gate/config.yaml`
-/// so it can be committed and shared with the team. Refuses to overwrite an
-/// existing file unless `force` is set.
-pub fn run_export(force: bool) {
+/// so it can be committed and shared with the team. Always overwrites — this is
+/// a git-tracked file, so an unwanted overwrite is a `git checkout` away as long
+/// as it's committed.
+pub fn run_export() {
     let repo_root = find_git_root().unwrap_or_else(|| {
         exit_with_error(
             "gate export must be run inside a git repository \
              (no .git found in this directory or any parent).",
         )
     });
-
-    let path = repo_root.join(".gate").join("config.yaml");
-    if !team_config_overwrite_allowed(&path, force) {
-        exit_with_error(&format!(
-            "team config already exists at {} — pass --force to overwrite it with your personal config",
-            path.display()
-        ));
-    }
 
     let personal = common::config::Config::load()
         .unwrap_or_else(|e| exit_with_error(&format!("failed to load personal config: {e}")));
@@ -1546,6 +1666,7 @@ mod tests {
     use std::sync::Mutex;
 
     static HOME_LOCK: Mutex<()> = Mutex::new(());
+    static GATE_CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
     fn tmp_path() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -3055,43 +3176,21 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_allowed_when_missing() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".gate").join("config.yaml");
-        assert!(team_config_overwrite_allowed(&path, false));
-        assert!(team_config_overwrite_allowed(&path, true));
-    }
-
-    #[test]
-    fn overwrite_blocked_when_present_without_force() {
+    fn ensure_scaffold_leaves_existing_alone() {
         let dir = tempfile::tempdir().unwrap();
         let path = seed_existing_team_config(&dir);
-        assert!(!team_config_overwrite_allowed(&path, false));
-    }
-
-    #[test]
-    fn overwrite_allowed_when_present_with_force() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = seed_existing_team_config(&dir);
-        assert!(team_config_overwrite_allowed(&path, true));
-    }
-
-    #[test]
-    fn ensure_scaffold_leaves_existing_alone_without_force() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = seed_existing_team_config(&dir);
-        ensure_team_config_scaffold(dir.path(), false);
+        ensure_team_config_scaffold(dir.path());
         let contents = std::fs::read_to_string(&path).unwrap();
         assert_eq!(contents, "min_gate_version: \"9.9.9\"\n");
     }
 
     #[test]
-    fn ensure_scaffold_overwrites_existing_with_force() {
+    fn ensure_scaffold_creates_when_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let path = seed_existing_team_config(&dir);
-        ensure_team_config_scaffold(dir.path(), true);
+        let path = dir.path().join(".gate").join("config.yaml");
+        ensure_team_config_scaffold(dir.path());
+        assert!(path.exists());
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert_ne!(contents, "min_gate_version: \"9.9.9\"\n");
         assert!(contents.contains(env!("CARGO_PKG_VERSION")));
     }
 
@@ -3162,22 +3261,135 @@ mod tests {
     }
 
     #[test]
-    fn export_blocked_when_team_config_exists_without_force() {
+    fn export_overwrites_existing_team_config() {
+        // gate export always overwrites — it's git-tracked, so an unwanted
+        // overwrite is recoverable via git as long as it was committed.
         let dir = tempfile::tempdir().unwrap();
         let path = seed_existing_team_config(&dir);
-        assert!(!team_config_overwrite_allowed(&path, false));
-        // run_export would exit_with_error at this same guard before ever loading
-        // the personal config or calling write_team_config_from_personal.
-    }
-
-    #[test]
-    fn export_allowed_when_team_config_exists_with_force() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = seed_existing_team_config(&dir);
-        assert!(team_config_overwrite_allowed(&path, true));
         write_team_config_from_personal(dir.path(), &sample_personal_config());
         let contents = std::fs::read_to_string(&path).unwrap();
         assert_ne!(contents, "min_gate_version: \"9.9.9\"\n");
         assert!(contents.contains("tkpsql"));
+    }
+
+    // ── gate init: merge project config into personal config ─────────────────
+
+    fn with_personal_config<F: FnOnce(&std::path::Path)>(initial_yaml: &str, f: F) {
+        let _guard = GATE_CONFIG_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, initial_yaml).unwrap();
+        unsafe { std::env::set_var("GATE_CONFIG", &path) };
+        f(&path);
+        unsafe { std::env::remove_var("GATE_CONFIG") };
+    }
+
+    fn write_project_config(dir: &tempfile::TempDir, yaml: &str) {
+        let gate_dir = dir.path().join(".gate");
+        std::fs::create_dir_all(&gate_dir).unwrap();
+        std::fs::write(gate_dir.join("config.yaml"), yaml).unwrap();
+    }
+
+    #[test]
+    fn merge_adds_new_tools_and_raises_threshold() {
+        with_personal_config("pii:\n  confidence_threshold: 0.5\n", |personal_path| {
+            let dir = tempfile::tempdir().unwrap();
+            write_project_config(
+                &dir,
+                "tools:\n  tkpsql:\n    sql_arg: \"--sql\"\npii:\n  confidence_threshold: 0.9\n",
+            );
+            merge_project_into_personal(dir.path());
+            let contents = std::fs::read_to_string(personal_path).unwrap();
+            let parsed: common::config::Config = serde_yaml::from_str(&contents).unwrap();
+            assert!(parsed.tools.contains_key("tkpsql"));
+            assert_eq!(parsed.pii.confidence_threshold, 0.9);
+        });
+    }
+
+    #[test]
+    fn merge_never_lowers_personal_threshold() {
+        with_personal_config("pii:\n  confidence_threshold: 0.9\n", |personal_path| {
+            let dir = tempfile::tempdir().unwrap();
+            write_project_config(&dir, "pii:\n  confidence_threshold: 0.3\n");
+            merge_project_into_personal(dir.path());
+            // Nothing changed (0.3 does not raise 0.9), so the file must be
+            // untouched, not rewritten with a lowered value.
+            let contents = std::fs::read_to_string(personal_path).unwrap();
+            assert_eq!(contents, "pii:\n  confidence_threshold: 0.9\n");
+        });
+    }
+
+    #[test]
+    fn merge_preserves_existing_personal_tools() {
+        with_personal_config("tools:\n  mysql:\n    sql_arg: \"-e\"\n", |personal_path| {
+            let dir = tempfile::tempdir().unwrap();
+            write_project_config(&dir, "tools:\n  tkpsql:\n    sql_arg: \"--sql\"\n");
+            merge_project_into_personal(dir.path());
+            let contents = std::fs::read_to_string(personal_path).unwrap();
+            let parsed: common::config::Config = serde_yaml::from_str(&contents).unwrap();
+            assert!(
+                parsed.tools.contains_key("mysql"),
+                "existing personal tool must survive"
+            );
+            assert!(
+                parsed.tools.contains_key("tkpsql"),
+                "new project tool must be added"
+            );
+        });
+    }
+
+    #[test]
+    fn merge_adds_column_allowlist_entries_by_explicit_design() {
+        // Per an explicit, twice-confirmed product decision, gate init's personal
+        // merge DOES include column_allowlist (unlike gate export, this is the one
+        // place a project's allowlist becomes global to the developer). Covered so
+        // any accidental change to this behavior is a visible diff.
+        with_personal_config("", |personal_path| {
+            let dir = tempfile::tempdir().unwrap();
+            write_project_config(&dir, "pii:\n  column_allowlist:\n    - user_id\n");
+            merge_project_into_personal(dir.path());
+            let contents = std::fs::read_to_string(personal_path).unwrap();
+            let parsed: common::config::Config = serde_yaml::from_str(&contents).unwrap();
+            assert_eq!(parsed.pii.column_allowlist, vec!["user_id"]);
+        });
+    }
+
+    #[test]
+    fn merge_is_noop_when_nothing_new() {
+        with_personal_config(
+            "tools:\n  tkpsql:\n    sql_arg: \"--sql\"\npii:\n  confidence_threshold: 0.9\n",
+            |personal_path| {
+                let dir = tempfile::tempdir().unwrap();
+                write_project_config(
+                    &dir,
+                    "tools:\n  tkpsql:\n    sql_arg: \"--sql\"\npii:\n  confidence_threshold: 0.5\n",
+                );
+                let before = std::fs::read_to_string(personal_path).unwrap();
+                merge_project_into_personal(dir.path());
+                let after = std::fs::read_to_string(personal_path).unwrap();
+                assert_eq!(
+                    before, after,
+                    "file must not be rewritten when nothing changed"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn merge_skips_gracefully_on_malformed_project_config() {
+        with_personal_config(
+            "tools:\n  tkpsql:\n    sql_arg: \"--sql\"\n",
+            |personal_path| {
+                let dir = tempfile::tempdir().unwrap();
+                write_project_config(&dir, "pii: {bad: yaml: :: :");
+                let before = std::fs::read_to_string(personal_path).unwrap();
+                merge_project_into_personal(dir.path());
+                let after = std::fs::read_to_string(personal_path).unwrap();
+                assert_eq!(
+                    before, after,
+                    "malformed project config must not touch personal config"
+                );
+            },
+        );
     }
 }

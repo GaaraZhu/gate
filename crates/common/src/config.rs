@@ -216,6 +216,12 @@ impl Config {
     /// (`.gate/config.yaml`) over it using tighten-only semantics. Returns the
     /// merged config alongside provenance describing what came from where, for
     /// `gate validate` to report.
+    ///
+    /// A malformed project config never takes down a good personal config: if
+    /// `.gate/config.yaml` fails to parse, this falls back to the personal config
+    /// alone (surfaced via `Provenance::project_parse_error`) rather than
+    /// propagating the error — a broken team file, committed by anyone, must not
+    /// silently disable every developer's personal protection.
     pub fn load_with_provenance() -> Result<(Self, Provenance)> {
         let user_path = config_path()?;
         let mut config = Self::load_from_path(&user_path)?;
@@ -231,22 +237,29 @@ impl Config {
             user_tool_names: config.tools.keys().cloned().collect(),
             min_gate_version: None,
             project_column_allowlist: Vec::new(),
+            project_parse_error: None,
         };
 
         if let Some(path) = &project_path {
-            let project = ProjectConfig::load_from_path(path)?;
-            provenance.project_confidence_threshold = project.pii.confidence_threshold;
-            provenance.project_tool_names = project.tools.keys().cloned().collect();
-            provenance.min_gate_version = project.min_gate_version.clone();
-            provenance.project_column_allowlist = project.pii.column_allowlist.clone();
-            config.apply_project(&project);
-            provenance.effective_confidence_threshold = config.pii.confidence_threshold;
+            match ProjectConfig::load_from_path(path) {
+                Ok(project) => {
+                    provenance.project_confidence_threshold = project.pii.confidence_threshold;
+                    provenance.project_tool_names = project.tools.keys().cloned().collect();
+                    provenance.min_gate_version = project.min_gate_version.clone();
+                    provenance.project_column_allowlist = project.pii.column_allowlist.clone();
+                    config.apply_project(&project);
+                    provenance.effective_confidence_threshold = config.pii.confidence_threshold;
+                }
+                Err(e) => {
+                    provenance.project_parse_error = Some(e.to_string());
+                }
+            }
         }
 
         Ok((config, provenance))
     }
 
-    pub(crate) fn load_from_path(path: &std::path::Path) -> Result<Self> {
+    pub fn load_from_path(path: &std::path::Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -263,7 +276,11 @@ impl Config {
     /// deliberate exception — it's also unioned, but unlike the other fields a
     /// project allowlist entry *reduces* what gets redacted for everyone who picks
     /// up this file. `gate validate` surfaces it explicitly for that reason.
-    fn apply_project(&mut self, project: &ProjectConfig) {
+    ///
+    /// Public because `gate init` also uses this to merge `.gate/config.yaml`
+    /// persistently into a developer's personal config file (not just the
+    /// in-memory merge `load_with_provenance` does per invocation).
+    pub fn apply_project(&mut self, project: &ProjectConfig) {
         if let Some(t) = project.pii.confidence_threshold {
             if t > self.pii.confidence_threshold {
                 self.pii.confidence_threshold = t;
@@ -310,6 +327,9 @@ pub struct Provenance {
     /// field that can reduce redaction for the whole team. Surfaced by
     /// `gate validate` so it's never a silent effect of pulling `.gate/config.yaml`.
     pub project_column_allowlist: Vec<String>,
+    /// Set when `.gate/config.yaml` exists but failed to parse. The personal
+    /// config is still used on its own in this case — see `load_with_provenance`.
+    pub project_parse_error: Option<String>,
 }
 
 /// The subset of config a project (`.gate/config.yaml`) can express. Deliberately
@@ -345,7 +365,7 @@ pub struct ProjectPiiConfig {
 }
 
 impl ProjectConfig {
-    fn load_from_path(path: &std::path::Path) -> Result<Self> {
+    pub fn load_from_path(path: &std::path::Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -799,6 +819,35 @@ pii:
             provenance.project_column_allowlist,
             vec!["employee_id".to_string()]
         );
+    }
+
+    #[test]
+    fn malformed_project_config_falls_back_to_personal_only() {
+        // A broken .gate/config.yaml (bad YAML, committed by anyone) must never
+        // take down a developer's good personal config — that would silently
+        // disable protection for the whole team.
+        let _guard = LOCK.lock().unwrap();
+        let mut user_f = NamedTempFile::new().unwrap();
+        user_f
+            .write_all(b"tools:\n  tkpsql:\n    sql_arg: \"--sql\"\n")
+            .unwrap();
+        let mut project_f = NamedTempFile::new().unwrap();
+        project_f.write_all(b"pii: {bad: yaml: :: :").unwrap();
+        unsafe {
+            std::env::set_var("GATE_CONFIG", user_f.path());
+            std::env::set_var("GATE_PROJECT_CONFIG", project_f.path());
+        }
+        let result = Config::load_with_provenance();
+        unsafe {
+            std::env::remove_var("GATE_CONFIG");
+            std::env::remove_var("GATE_PROJECT_CONFIG");
+        }
+        let (config, provenance) = result.expect("must not propagate a project parse error");
+        assert!(
+            config.tools.contains_key("tkpsql"),
+            "personal config must survive a broken project config"
+        );
+        assert!(provenance.project_parse_error.is_some());
     }
 
     #[test]

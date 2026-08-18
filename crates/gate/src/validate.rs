@@ -25,6 +25,11 @@ pub fn run() {
             ));
         }
     }
+    if let Some(e) = &provenance.project_parse_error {
+        warnings.push(format!(
+            ".gate/config.yaml failed to parse, falling back to personal config only: {e}"
+        ));
+    }
 
     // Warn on raw clients
     for name in config.tools.keys() {
