@@ -2,6 +2,8 @@
 
 Config lives at `~/.config/gate/config.yaml` (override with `GATE_CONFIG`).
 
+For a team-shared config that's merged on top of this one, see [docs/team.md](team.md) — a git-tracked `.gate/config.yaml` at the repo root, with `gate export` to write it and `gate init` to pick it up.
+
 ## Built-in PII detection
 
 `gate` ships with two layers of built-in detection that require no configuration.

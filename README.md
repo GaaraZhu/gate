@@ -127,6 +127,22 @@ See [docs/scan.md](docs/scan.md) for queries against MySQL, MS SQL Server (inclu
 
 Run `gate validate` to confirm your config is valid before the first session.
 
+## Team setup
+
+Personal config (`~/.config/gate/config.yaml`) doesn't travel with the repo — one developer tightening a threshold or adding a pattern doesn't help anyone else. `.gate/config.yaml`, committed to git, fixes that.
+
+```bash
+# Team lead, once:
+gate export                          # writes personal config's tools/patterns/thresholds into .gate/config.yaml
+git add .gate/config.yaml && git commit -m "add gate team config"
+
+# Everyone else:
+git clone <repo>
+gate init                            # installs the hook AND merges .gate/config.yaml into personal config
+```
+
+The merge is tighten-only — a project config can raise thresholds and add tools/patterns, never weaken protection — with one called-out exception for `column_allowlist`. See [docs/team.md](docs/team.md) for the full merge rules and why `gate init` bakes it into personal config instead of only reading it live.
+
 ## How it works
 
 `gate` covers two access paths agents use to reach data. The [blog post](https://gaarazhu.github.io/introducing-gate/) has the full walkthrough; the short version:
@@ -240,14 +256,15 @@ The ones you'll use most:
 
 | Command | Purpose |
 |---|---|
-| `gate init` | Register the hook with your harness (see Quickstart) |
+| `gate init` | Register the hook with your harness; also scaffolds and picks up team config (see Quickstart and Team setup) |
+| `gate export` | Write your personal config into `.gate/config.yaml` to share with the team (see Team setup) |
 | `gate config` | Create and edit the YAML config |
 | `gate scan` | PII risk report across your schema |
 | `gate allowlist add/remove/list` | Manage column-name false positives |
 | `gate retro` | Protection retrospective — total queries & PII fields redacted, breakdown by tool and PII type/category, hit rate with visual progress bar, and low-confidence warnings with allowlist hints |
 | `gate log [-f]` | Live feed of interception events — see what gate matched, redacted, or blocked in real time. Counts and labels only, never raw command lines or PII |
 | `gate enable` / `gate disable` | Toggle redaction without uninstalling |
-| `gate validate` | Check config for errors before the first session |
+| `gate validate` | Check config for errors before the first session; shows team config provenance when `.gate/config.yaml` is present |
 | `gate protect` / `gate unprotect` *(Unix only)* | Transfer config ownership to root |
 | `gate uninstall` | Remove everything gate added to your system |
 
@@ -267,6 +284,7 @@ Enforced at the OS level across all harnesses (Claude Code, OpenCode, Cursor, Gi
 ## Documentation
 
 - [Configuration](docs/configuration.md) — full YAML schema and built-in PII detection rules
+- [Team configuration](docs/team.md) — sharing config across a team via `.gate/config.yaml`
 - [Commands](docs/commands.md) — full subcommand reference
 - [MCP setup](docs/mcp.md) — wrapping existing MCP servers and registering new ones
 - [Scan queries](docs/scan.md) — schema-query examples for each database

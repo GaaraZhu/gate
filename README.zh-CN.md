@@ -139,6 +139,22 @@ psql -U <user> -h <host> -d <dbname> -c "SELECT TABLE_NAME, COLUMN_NAME FROM INF
 
 在首次会话前运行 `gate validate` 以确认配置有效。
 
+## 团队协作
+
+个人配置（`~/.config/gate/config.yaml`）不会随仓库一起流转——一位开发者调高阈值或新增模式规则，并不会让其他人受益。提交到 git 的 `.gate/config.yaml` 解决了这个问题。
+
+```bash
+# 团队负责人，只需一次：
+gate export                          # 将个人配置中的 tools/patterns/thresholds 写入 .gate/config.yaml
+git add .gate/config.yaml && git commit -m "add gate team config"
+
+# 其他所有人：
+git clone <repo>
+gate init                            # 安装钩子，同时将 .gate/config.yaml 合并进个人配置
+```
+
+合并规则只会收紧防护——项目配置可以提高阈值、新增工具和模式规则，但绝不会削弱防护——但 `column_allowlist` 是一个明确标注的例外。完整的合并规则，以及为什么 `gate init` 会把它写入个人配置而不只是实时读取，见 [docs/team.md](docs/team.md)。
+
 ## 工作原理
 
 `gate` 覆盖了智能体访问数据的两条路径。[博客文章](https://gaarazhu.github.io/introducing-gate/) 提供了完整的讲解；简要版本如下：
@@ -240,13 +256,15 @@ gate <subcommand> --help       # 任意子命令的详情
 
 | 命令 | 用途 |
 |---|---|
-| `gate init` | 向你的 harness 注册钩子（见快速上手） |
+| `gate init` | 向你的 harness 注册钩子；同时会创建并合并团队配置（见快速上手与团队协作） |
+| `gate export` | 将个人配置写入 `.gate/config.yaml` 以便与团队共享（见团队协作） |
 | `gate config` | 创建并编辑 YAML 配置 |
 | `gate scan` | 跨 schema 的 PII 风险报告 |
 | `gate allowlist add/remove/list` | 管理列名误报 |
 | `gate retro` | 防护回顾——总查询数与已脱敏 PII 字段数、按工具和 PII 类型/类别的细分、带可视化进度条的命中率 |
+| `gate log [-f]` | 实时查看拦截事件——查看 gate 匹配、脱敏或阻止了哪些内容。仅包含计数与标签，绝不包含原始命令行或 PII |
 | `gate enable` / `gate disable` | 在不卸载的情况下开关脱敏 |
-| `gate validate` | 在首次会话前检查配置中的错误 |
+| `gate validate` | 在首次会话前检查配置中的错误；当存在 `.gate/config.yaml` 时还会显示团队配置的来源信息 |
 | `gate protect` / `gate unprotect` *（仅 Unix）* | 将配置文件所有权转移给 root |
 | `gate uninstall` | 移除 gate 添加到你系统中的所有内容 |
 
@@ -266,6 +284,7 @@ sudo gate unprotect    # 恢复直接写入权限
 ## 文档
 
 - [配置](docs/configuration.md) —— 完整的 YAML schema 与内置 PII 检测规则
+- [团队配置](docs/team.md) —— 通过 `.gate/config.yaml` 在团队间共享配置
 - [命令](docs/commands.md) —— 完整的子命令参考
 - [MCP 设置](docs/mcp.md) —— 包裹现有 MCP 服务器并注册新服务器
 - [扫描查询](docs/scan.md) —— 各数据库的 schema 查询示例

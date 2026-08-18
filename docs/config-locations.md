@@ -1,5 +1,14 @@
 # Config file locations
 
+## Gate's own config
+
+| Scope | Location |
+|---|---|
+| Personal (override with `GATE_CONFIG`) | `~/.config/gate/config.yaml` |
+| Project, git-tracked (override with `GATE_PROJECT_CONFIG`) | `.gate/config.yaml` at the repo root |
+
+The project file, when present, is merged into the personal config — see [docs/team.md](team.md) for the merge rules, `gate export`, and how `gate init` picks it up.
+
 ## Hook settings
 
 | Harness | Global / user | Project |
