@@ -39,17 +39,22 @@ Review allowlist entries in `.gate/config.yaml` the same way you'd review any ot
 ## Setting it up (team lead, once)
 
 ```bash
+cd repo   # run from the repo root so the file lands in the right place
 gate export
 ```
 
-This writes your current personal config's tools, patterns, thresholds, `column_denylist`, and `column_allowlist` into `.gate/config.yaml` (fields outside that list — `enabled`, `action`, hashing, etc. — stay personal and are never written). Review the file, then commit it:
+This writes your current personal config's tools, patterns, thresholds, `column_denylist`, and `column_allowlist` into `config.yaml` **in the current directory** (fields outside that list — `enabled`, `action`, hashing, etc. — stay personal and are never written). `gate export` doesn't require a git repository and doesn't know about `.gate/` — it just writes `config.yaml` wherever you run it. Move it into place and commit:
 
 ```bash
+mkdir -p .gate
+mv config.yaml .gate/config.yaml
 git add .gate/config.yaml
 git commit -m "add gate team config"
 ```
 
-`gate export` always overwrites `.gate/config.yaml` if it already exists — there's no `--force` to remember. It's a git-tracked file, so commit before re-running if you want a rollback point; an uncommitted overwrite isn't recoverable.
+Putting it at `.gate/config.yaml` matters: that's the only location the **live** per-invocation merge (below) recognizes. A bare `config.yaml` left at the repo root is still picked up by `gate config --sync`, but not by the automatic walk that `gate hook`/`gate run` do on every command — see "Why merge into personal config instead of just reading the project file live?" below.
+
+`gate export` always overwrites `config.yaml` in the current directory if it already exists — there's no `--force` to remember. Once moved into `.gate/config.yaml` and committed, an unwanted overwrite is a `git checkout` away; an uncommitted one isn't recoverable.
 
 You can hand-edit `.gate/config.yaml` directly instead of (or after) exporting — it's just YAML matching the schema above.
 

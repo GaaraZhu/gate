@@ -132,8 +132,9 @@ Run `gate validate` to confirm your config is valid before the first session.
 Personal config (`~/.config/gate/config.yaml`) doesn't travel with the repo — one developer tightening a threshold or adding a pattern doesn't help anyone else. `.gate/config.yaml`, committed to git, fixes that.
 
 ```bash
-# Team lead, once:
-gate export                          # writes personal config's tools/patterns/thresholds into .gate/config.yaml
+# Team lead, once, from the repo root:
+gate export                          # writes personal config's tools/patterns/thresholds into ./config.yaml
+mkdir -p .gate && mv config.yaml .gate/config.yaml
 git add .gate/config.yaml && git commit -m "add gate team config"
 
 # Everyone else (after gate init from the Quickstart above):

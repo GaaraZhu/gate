@@ -492,33 +492,27 @@ fn merge_project_into_personal(team_path: &Path) {
     }
 }
 
-/// `gate export`: writes the caller's personal config into `.gate/config.yaml`
-/// so it can be committed and shared with the team. Always overwrites — this is
-/// a git-tracked file, so an unwanted overwrite is a `git checkout` away as long
+/// `gate export`: writes the caller's personal config into `config.yaml` in
+/// the current directory so it can be committed and shared with the team. No
+/// git repository required. Always overwrites — this is meant to be a
+/// git-tracked file, so an unwanted overwrite is a `git checkout` away as long
 /// as it's committed.
 pub fn run_export() {
-    let repo_root = find_git_root().unwrap_or_else(|| {
-        exit_with_error(
-            "gate export must be run inside a git repository \
-             (no .git found in this directory or any parent).",
-        )
-    });
+    let cwd = std::env::current_dir()
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to resolve current directory: {e}")));
 
     let personal = common::config::Config::load()
         .unwrap_or_else(|e| exit_with_error(&format!("failed to load personal config: {e}")));
-    write_team_config_from_personal(&repo_root, &personal);
+    write_team_config_from_personal(&cwd.join("config.yaml"), &personal);
 }
 
-/// Exports `personal` into `.gate/config.yaml` under `repo_root`, overwriting
-/// whatever is there. Only fields `ProjectConfig` can express are carried over
-/// (tools, patterns, thresholds, column_denylist, column_allowlist) — `enabled`,
-/// `action`, `wildcard_policy`, redaction format, hashing, and mcp/stats settings
-/// stay personal, since they're either local/stylistic or (for `enabled`) not
-/// something a project file can set at all. Callers decide whether overwriting is
-/// appropriate.
-fn write_team_config_from_personal(repo_root: &Path, personal: &common::config::Config) {
-    let path = repo_root.join(".gate").join("config.yaml");
-
+/// Exports `personal` into `path`, overwriting whatever is there. Only fields
+/// `ProjectConfig` can express are carried over (tools, patterns, thresholds,
+/// column_denylist, column_allowlist) — `enabled`, `action`, `wildcard_policy`,
+/// redaction format, hashing, and mcp/stats settings stay personal, since
+/// they're either local/stylistic or (for `enabled`) not something a project
+/// file can set at all. Callers decide whether overwriting is appropriate.
+fn write_team_config_from_personal(path: &Path, personal: &common::config::Config) {
     let project = common::config::ProjectConfig {
         min_gate_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         tools: personal.tools.clone(),
@@ -549,7 +543,7 @@ fn write_team_config_from_personal(repo_root: &Path, personal: &common::config::
         # Run `gate validate` to see the effective merged config and its provenance.\n\n";
     let contents = format!("{header}{body}");
 
-    write_text_atomic(&path, &contents)
+    write_text_atomic(path, &contents)
         .unwrap_or_else(|e| exit_with_error(&format!("failed to write team config: {e}")));
 
     println!(
@@ -3271,8 +3265,8 @@ mod tests {
     fn team_config_from_personal_exports_tightening_fields() {
         let dir = tempfile::tempdir().unwrap();
         let personal = sample_personal_config();
-        write_team_config_from_personal(dir.path(), &personal);
-        let path = dir.path().join(".gate").join("config.yaml");
+        let path = dir.path().join("config.yaml");
+        write_team_config_from_personal(&path, &personal);
         let contents = std::fs::read_to_string(&path).unwrap();
         let parsed: common::config::ProjectConfig = serde_yaml::from_str(&contents).unwrap();
         assert!(parsed.tools.contains_key("tkpsql"));
@@ -3285,20 +3279,21 @@ mod tests {
     fn team_config_from_personal_exports_allowlist_when_present() {
         let dir = tempfile::tempdir().unwrap();
         let personal = sample_personal_config();
-        write_team_config_from_personal(dir.path(), &personal);
-        let path = dir.path().join(".gate").join("config.yaml");
+        let path = dir.path().join("config.yaml");
+        write_team_config_from_personal(&path, &personal);
         let contents = std::fs::read_to_string(&path).unwrap();
         let parsed: common::config::ProjectConfig = serde_yaml::from_str(&contents).unwrap();
         assert_eq!(parsed.pii.column_allowlist, vec!["employee_id"]);
     }
 
     #[test]
-    fn export_overwrites_existing_team_config() {
-        // gate export always overwrites — it's git-tracked, so an unwanted
-        // overwrite is recoverable via git as long as it was committed.
+    fn export_overwrites_existing_config_yaml() {
+        // gate export always overwrites — it's meant to be git-tracked, so an
+        // unwanted overwrite is recoverable via git as long as it was committed.
         let dir = tempfile::tempdir().unwrap();
-        let path = seed_existing_team_config(&dir);
-        write_team_config_from_personal(dir.path(), &sample_personal_config());
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "min_gate_version: \"9.9.9\"\n").unwrap();
+        write_team_config_from_personal(&path, &sample_personal_config());
         let contents = std::fs::read_to_string(&path).unwrap();
         assert_ne!(contents, "min_gate_version: \"9.9.9\"\n");
         assert!(contents.contains("tkpsql"));

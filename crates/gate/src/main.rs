@@ -112,7 +112,7 @@ enum Commands {
         yes: bool,
     },
     #[command(
-        about = "Export your personal config into .gate/config.yaml so it can be committed and shared with the team.\nAlways overwrites an existing team config — it's git-tracked, so commit before re-running if you want a rollback point."
+        about = "Export your personal config into config.yaml in the current directory so it can be committed and shared with the team. No git repo required.\nAlways overwrites an existing team config — it's meant to be git-tracked, so commit before re-running if you want a rollback point."
     )]
     Export,
     #[command(
