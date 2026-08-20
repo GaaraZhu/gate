@@ -59,6 +59,28 @@ fn redact_run_log(
         .unwrap()
 }
 
+/// `gate run` with no command args reads JSON straight from stdin (no subprocess spawned).
+fn redact_run_stdin(config: &str, input: &str) -> std::process::Output {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new(BIN)
+        .arg("run")
+        .env("GATE_CONFIG", config)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
 fn read_log_events(path: &str) -> Vec<serde_json::Value> {
     fs::read_to_string(path)
         .unwrap_or_default()
@@ -612,6 +634,65 @@ fn databricks_api_response_redacts_denylisted_column_by_name() {
             .starts_with("[PII:"),
         "account_number should be redacted by column name, got {:?}",
         v["result"]["data_array"][0][1]
+    );
+}
+
+/// Regression: `gate run` with no args (stdin mode, e.g. `cat resp.json | gate run`) piping
+/// the chunked Databricks Statement Execution API shape (extra `manifest.chunks`/`result.row_count`
+/// siblings around `schema.columns` / `result.data_array`) must not double-walk `data_array`.
+/// The bug: `redact_databricks_api` reinserted the already-redacted `data_array` into
+/// `result_map`/`map` *before* the generic per-field walk of the remaining sibling fields,
+/// so `data_array` got walked a second time with no column-name context — clobbering an
+/// allowlisted column's plain UUID with a value-only regex false positive.
+#[test]
+fn databricks_api_stdin_does_not_double_walk_data_array() {
+    let dir = tmp();
+    let config = write_config(
+        &dir,
+        "tools: {}\npii:\n  column_allowlist:\n    - subaccount_id\n",
+    );
+
+    let input = r#"{
+        "manifest": {
+            "chunks": [{"chunk_index":0,"row_count":1,"row_offset":0}],
+            "format": "JSON_ARRAY",
+            "schema": {
+                "column_count": 2,
+                "columns": [
+                    {"name":"subaccount_id","position":0,"type_name":"STRING","type_text":"STRING"},
+                    {"name":"account_name","position":1,"type_name":"STRING","type_text":"STRING"}
+                ]
+            },
+            "total_chunk_count": 1,
+            "total_row_count": 1,
+            "truncated": false
+        },
+        "result": {
+            "chunk_index": 0,
+            "row_offset": 0,
+            "row_count": 1,
+            "data_array": [["a0683031-31b4-4ca8-b849-a52a5c96b7dc", "J R Wqrchwpgo & C T Ywgnc"]]
+        },
+        "statement_id": "01f19c74-dc6b-1c65-a8d6-3c0895dc8b27",
+        "status": {"state": "SUCCEEDED"}
+    }"#;
+
+    let out = redact_run_stdin(&config, input);
+
+    assert_eq!(
+        exit_code(&out),
+        0,
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(
+        v["result"]["data_array"][0][0], "a0683031-31b4-4ca8-b849-a52a5c96b7dc",
+        "allowlisted subaccount_id must survive unchanged, not get double-walked into a false-positive redaction"
+    );
+    assert_eq!(
+        v["result"]["data_array"][0][1], "[PII:name]",
+        "account_name should still be redacted"
     );
 }
 

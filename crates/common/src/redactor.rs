@@ -407,9 +407,15 @@ fn redact_databricks_api(
         })
         .unwrap_or_default();
 
-    if let Some(Value::Object(mut result_map)) = map.remove("result") {
-        if let Some(Value::Array(rows)) = result_map.remove("data_array") {
-            let new_rows = redact_rows(
+    let processed_result = if let Some(Value::Object(mut result_map)) = map.remove("result") {
+        // Remove data_array first and reinsert only after the generic walk below,
+        // so it isn't re-walked a second time without column-name context (that
+        // double pass previously clobbered allowlisted cells with regex-only matches).
+        let processed_data_array = result_map.remove("data_array").map(|v| {
+            let Value::Array(rows) = v else {
+                unreachable!("data_array validated as array-of-arrays by detect_shape");
+            };
+            Value::Array(redact_rows(
                 &col_names,
                 rows,
                 plan,
@@ -418,10 +424,9 @@ fn redact_databricks_api(
                 effective_names,
                 effective_allowlist,
                 summary,
-            );
-            result_map.insert("data_array".to_string(), Value::Array(new_rows));
-        }
-        let new_result: Map<String, Value> = result_map
+            ))
+        });
+        let mut new_result: Map<String, Value> = result_map
             .into_iter()
             .map(|(k, v)| {
                 let new_v = walk(
@@ -437,10 +442,19 @@ fn redact_databricks_api(
                 (k, new_v)
             })
             .collect();
-        map.insert("result".to_string(), Value::Object(new_result));
-    }
+        if let Some(data_array) = processed_data_array {
+            new_result.insert("data_array".to_string(), data_array);
+        }
+        Some(Value::Object(new_result))
+    } else {
+        None
+    };
 
-    let new_map: Map<String, Value> = map
+    // Walk all remaining top-level fields normally (manifest, status, statement_id, ...).
+    // "result" was already removed above so it isn't re-walked generically here —
+    // that double pass previously re-scanned data_array without column context and
+    // clobbered correctly-skipped/allowlisted cells with value-only regex matches.
+    let mut new_map: Map<String, Value> = map
         .into_iter()
         .map(|(k, v)| {
             let new_v = walk(
@@ -456,6 +470,10 @@ fn redact_databricks_api(
             (k, new_v)
         })
         .collect();
+
+    if let Some(result) = processed_result {
+        new_map.insert("result".to_string(), result);
+    }
 
     Value::Object(new_map)
 }
