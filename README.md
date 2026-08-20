@@ -98,8 +98,9 @@ See [docs/scan.md](docs/scan.md) for queries against MySQL, MS SQL Server (inclu
 3. **Register the hook** with your agent harness:
 
    ```bash
-   gate init                            # Claude Code (default)
-   gate init --harness opencode         # OpenCode
+   gate init                            # Claude Code + Copilot CLI + OpenCode (default)
+   gate init --harness claude-code      # Claude Code only
+   gate init --harness opencode         # OpenCode only
    gate init --harness cursor           # Cursor
    gate init --harness copilot-cli      # GitHub Copilot CLI
    gate init --harness codex            # Codex CLI
@@ -107,7 +108,7 @@ See [docs/scan.md](docs/scan.md) for queries against MySQL, MS SQL Server (inclu
    gate init --harness codebuddy        # CodeBuddy
    ```
 
-   Add `--scope project` for project-only setup. Restart your OpenCode, Cursor, Gemini CLI, or CodeBuddy session after `gate init` to load the hook. For Codex CLI, restart the session, then review the hook in the Trust & Permissions UI, mark it as trusted, and enable it. For Copilot CLI, the default (global) scope writes `~/.copilot/hooks/PreToolUse.json` — no repo changes needed. If you instead use `--scope project`, add `.github/hooks/PreToolUse.json` to your repo's `.gitignore` — each developer runs `gate init --harness copilot-cli --scope project` once in their local clone.
+   Add `--scope project` for project-only setup. Pass `--harness <name>` to install into just one harness; without it, `gate init` installs into Claude Code, Copilot CLI, and OpenCode. Restart your OpenCode, Cursor, Gemini CLI, or CodeBuddy session after `gate init` to load the hook. For Codex CLI, restart the session, then review the hook in the Trust & Permissions UI, mark it as trusted, and enable it. For Copilot CLI, the default (global) scope writes `~/.copilot/hooks/PreToolUse.json` — no repo changes needed. If you instead use `--scope project`, add `.github/hooks/PreToolUse.json` to your repo's `.gitignore` — each developer runs `gate init --harness copilot-cli --scope project` once in their local clone.
 
 4. *(Optional)* **Register MCP server proxies** so `tools/call` responses also pass through gate:
 

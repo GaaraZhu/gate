@@ -11,6 +11,7 @@
 
 ### ✨ Improvements
 
+- **`gate init` with no `--harness` now installs into Claude Code, Copilot CLI, and OpenCode** (previously Claude Code only). Pass `--harness <name>` to target just one. `--mcp`/`--wrap-mcp` still default to `claude-code` alone, since those write into one harness's config format.
 - **Any pattern match now redacts** — `confidence_threshold` is now a warn gate only; values matched below the threshold are redacted *and* flagged with a `low-confidence` warning rather than passed through. Use `column_allowlist` to suppress false positives.
 - **`column_allowlist` now skips all redaction** — previously only name-based checks were skipped; value-level scanning (Luhn, regex) still fired. Now allowlisted columns are fully trusted and pass through without any check.
 - **`gate retro` low-confidence warnings** — surfaces a deduplicated list of low-confidence redactions with the exact `gate allowlist add <col>` command to suppress each one. Columns already in the allowlist are filtered out automatically.

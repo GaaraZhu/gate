@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
+/// Harnesses `gate init` installs into when `--harness` is omitted.
+const DEFAULT_INIT_HARNESSES: &[&str] = &["claude-code", "copilot-cli", "opencode"];
+
 #[derive(ValueEnum, Clone)]
 enum Harness {
     #[value(name = "claude-code")]
@@ -89,9 +92,9 @@ enum Commands {
         about = "Register the PreToolUse hook in the agent harness settings.\nWith --wrap-mcp, converts existing MCP servers to gate mcp proxies (dry-run by default; use --yes to apply).\nWith --mcp, registers a single gate mcp proxy entry for a named MCP server."
     )]
     Init {
-        /// Agent harness to install the hook into
-        #[arg(long, default_value = "claude-code")]
-        harness: Harness,
+        /// Agent harness to install the hook into (default: claude-code, copilot-cli, and opencode)
+        #[arg(long)]
+        harness: Option<Harness>,
         /// Installation scope: global/user (default) or project
         #[arg(long, default_value = "global")]
         scope: String,
@@ -255,15 +258,34 @@ fn main() {
             wrap_mcp,
             servers,
             yes,
-        } => init::run(
-            harness.as_str(),
-            &scope,
-            mcp.as_deref(),
-            mcp_cmd.as_deref(),
-            wrap_mcp,
-            servers.as_deref(),
-            yes,
-        ),
+        } => match harness {
+            Some(h) => init::run(
+                h.as_str(),
+                &scope,
+                mcp.as_deref(),
+                mcp_cmd.as_deref(),
+                wrap_mcp,
+                servers.as_deref(),
+                yes,
+            ),
+            // No --harness given: --mcp/--wrap-mcp target one harness's config
+            // format, so keep the historical single-harness default for those.
+            // A bare `gate init` installs the hook into all default harnesses.
+            None if mcp.is_some() || wrap_mcp => init::run(
+                "claude-code",
+                &scope,
+                mcp.as_deref(),
+                mcp_cmd.as_deref(),
+                wrap_mcp,
+                servers.as_deref(),
+                yes,
+            ),
+            None => {
+                for h in DEFAULT_INIT_HARNESSES {
+                    init::run(h, &scope, None, None, false, None, false);
+                }
+            }
+        },
         Commands::Export => init::run_export(),
         Commands::Config {
             path,
