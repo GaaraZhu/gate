@@ -16,7 +16,7 @@ The project file, when present, is merged into the personal config — see [docs
 | Claude Code | `~/.claude/settings.json` | `.claude/settings.json` |
 | OpenCode | `~/.config/opencode/opencode.json` | `./opencode.json` |
 | Cursor | `~/.cursor/hooks.json` | `.cursor/hooks.json` |
-| Copilot CLI | — (not supported) | `.github/hooks/PreToolUse.json` |
+| Copilot CLI | `~/.copilot/hooks/PreToolUse.json` | `.github/hooks/PreToolUse.json` |
 | Codex CLI | `~/.codex/hooks.json` | `.codex/hooks.json` |
 | Gemini CLI | `~/.gemini/settings.json` | `.gemini/settings.json` |
 | CodeBuddy | `~/.codebuddy/settings.json` | `.codebuddy/settings.json` |

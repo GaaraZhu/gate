@@ -1,6 +1,6 @@
 use crate::init::{
     claude_settings_path, codebuddy_settings_path, codex_hooks_path, copilot_entry_has_gate_hook,
-    cursor_entry_has_gate_hook, cursor_hooks_path, entry_has_gate_hook, find_git_root,
+    copilot_hooks_path, cursor_entry_has_gate_hook, cursor_hooks_path, entry_has_gate_hook,
     gemini_entry_has_gate_hook, gemini_settings_path,
 };
 use crate::init_opencode::{has_gate_header, plugin_path};
@@ -80,8 +80,10 @@ fn collect_actions() -> Vec<Action> {
             actions.push(a);
         }
     }
-    if let Some(a) = plan_remove_copilot_hook() {
-        actions.push(a);
+    for scope in &["global", "project"] {
+        if let Some(a) = plan_remove_copilot_hook(scope) {
+            actions.push(a);
+        }
     }
     for scope in &["global", "project"] {
         if let Some(a) = plan_remove_cursor_hook(scope) {
@@ -186,9 +188,8 @@ fn plan_remove_plugin(scope: &str) -> Option<Action> {
     }
 }
 
-fn plan_remove_copilot_hook() -> Option<Action> {
-    let root = find_git_root()?;
-    let path = root.join(".github").join("hooks").join("PreToolUse.json");
+fn plan_remove_copilot_hook(scope: &str) -> Option<Action> {
+    let path = copilot_hooks_path(scope).ok()?;
     if !path.exists() {
         return None;
     }

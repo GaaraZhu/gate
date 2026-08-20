@@ -272,7 +272,28 @@ fn report_harness_installations() {
         }
     }
 
-    // Copilot CLI (project-level only)
+    // Copilot CLI global
+    if let Ok(home) = std::env::var("HOME") {
+        let path = PathBuf::from(&home)
+            .join(".copilot")
+            .join("hooks")
+            .join("PreToolUse.json");
+        if path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    if v["hooks"]["PreToolUse"]
+                        .as_array()
+                        .map(|arr| arr.iter().any(crate::init::copilot_entry_has_gate_hook))
+                        .unwrap_or(false)
+                    {
+                        hooks.push(format!("Copilot CLI ({})", path.display()));
+                    }
+                }
+            }
+        }
+    }
+
+    // Copilot CLI project
     if in_git_repo {
         let copilot_path = PathBuf::from(".github")
             .join("hooks")

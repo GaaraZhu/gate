@@ -79,7 +79,7 @@ When modifying redaction logic (`common/redactor.rs`, `gate1/lib.rs`, `mcp/inter
 - **`gate init` and interactive `gate config` are blocked inside agent harnesses.** Check `is_agent_harness()` at the top of those handlers.
 - **`gate hook` must be fast on the passthrough path** — single-digit ms. It fires on every Bash command.
 - **Errors use `{"error": "..."}` format with exit code 1**, matching toolkit convention.
-- **Hook output format must match the detected input format.** Today only the snake_case Claude Code shape is implemented (`hookSpecificOutput.updatedInput`). When opencode lands, the snake_case shape is reused — the opencode plugin formats its payload as snake_case before piping to `gate hook`, so the Rust side stays single-format. Copilot CLI support is deferred.
+- **Hook output format must match the detected input format.** Claude Code uses the snake_case shape (`hookSpecificOutput.updatedInput`); the opencode plugin formats its payload as snake_case before piping to `gate hook`, so it reuses the same shape. Copilot CLI (`--format copilot`) uses its own shape (`modifiedArgs`) — see `Format::Copilot` in `gate/hook.rs`.
 
 ## Key invariants by file
 

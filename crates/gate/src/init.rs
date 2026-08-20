@@ -169,7 +169,7 @@ pub fn run(
             run_with_path(&path);
         }
         "opencode" => crate::init_opencode::run(scope),
-        "copilot-cli" => init_copilot_cli(),
+        "copilot-cli" => init_copilot_cli(scope),
         "cursor" => init_cursor(scope),
         "codex" => init_codex(scope),
         "gemini" => init_gemini(scope),
@@ -967,17 +967,31 @@ fn print_wrap_plan(
 
 // ── Copilot CLI hook installation ────────────────────────────────────────────
 
-fn init_copilot_cli() {
-    let repo_root = match find_git_root() {
-        Some(r) => r,
-        None => exit_with_error(
-            "not inside a git repository; gate init --harness copilot-cli requires a git repository",
-        ),
-    };
-    let path = repo_root
-        .join(".github")
+/// Resolve the Copilot CLI command-hook path for the given scope.
+/// "project" → <repo_root>/.github/hooks/PreToolUse.json (requires a git repository);
+/// anything else ("user", "global") → ~/.copilot/hooks/PreToolUse.json.
+pub(crate) fn copilot_hooks_path(scope: &str) -> Result<PathBuf, String> {
+    if scope == "project" {
+        let root = find_git_root().ok_or_else(|| {
+            "not inside a git repository; gate init --harness copilot-cli --scope project requires a git repository"
+                .to_string()
+        })?;
+        return Ok(root.join(".github").join("hooks").join("PreToolUse.json"));
+    }
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "cannot resolve home directory: set HOME or USERPROFILE".to_string())?;
+    Ok(PathBuf::from(home)
+        .join(".copilot")
         .join("hooks")
-        .join("PreToolUse.json");
+        .join("PreToolUse.json"))
+}
+
+fn init_copilot_cli(scope: &str) {
+    let path = match copilot_hooks_path(scope) {
+        Ok(p) => p,
+        Err(e) => exit_with_error(&e),
+    };
     run_copilot_with_path(&path);
 }
 
@@ -1929,6 +1943,50 @@ mod tests {
     fn copilot_mcp_path_project_is_relative() {
         let path = copilot_mcp_path("project").unwrap();
         assert_eq!(path, PathBuf::from(".mcp.json"));
+    }
+
+    // copilot_hooks_path
+
+    #[test]
+    fn copilot_hooks_path_global_uses_home() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let saved = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", "/test/home") };
+        let path = copilot_hooks_path("global").unwrap();
+        match saved {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(
+            path,
+            PathBuf::from("/test/home/.copilot/hooks/PreToolUse.json")
+        );
+    }
+
+    #[test]
+    fn copilot_hooks_path_user_uses_home() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let saved = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", "/test/home") };
+        let path = copilot_hooks_path("user").unwrap();
+        match saved {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(
+            path,
+            PathBuf::from("/test/home/.copilot/hooks/PreToolUse.json")
+        );
+    }
+
+    #[test]
+    fn copilot_hooks_path_project_requires_git_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let result = copilot_hooks_path("project");
+        std::env::set_current_dir(saved).unwrap();
+        assert!(result.is_err());
     }
 
     // register_mcp_server (claude-code, project scope → .mcp.json)

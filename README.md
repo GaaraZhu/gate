@@ -101,13 +101,13 @@ See [docs/scan.md](docs/scan.md) for queries against MySQL, MS SQL Server (inclu
    gate init                            # Claude Code (default)
    gate init --harness opencode         # OpenCode
    gate init --harness cursor           # Cursor
-   gate init --harness copilot-cli      # GitHub Copilot CLI (project-scoped, run from repo root)
+   gate init --harness copilot-cli      # GitHub Copilot CLI
    gate init --harness codex            # Codex CLI
    gate init --harness gemini           # Gemini CLI
    gate init --harness codebuddy        # CodeBuddy
    ```
 
-   Add `--scope project` for project-only setup. Restart your OpenCode, Cursor, Gemini CLI, or CodeBuddy session after `gate init` to load the hook. For Codex CLI, restart the session, then review the hook in the Trust & Permissions UI, mark it as trusted, and enable it. For Copilot CLI, add `.github/hooks/PreToolUse.json` to your repo's `.gitignore` — each developer runs `gate init --harness copilot-cli` once in their local clone.
+   Add `--scope project` for project-only setup. Restart your OpenCode, Cursor, Gemini CLI, or CodeBuddy session after `gate init` to load the hook. For Codex CLI, restart the session, then review the hook in the Trust & Permissions UI, mark it as trusted, and enable it. For Copilot CLI, the default (global) scope writes `~/.copilot/hooks/PreToolUse.json` — no repo changes needed. If you instead use `--scope project`, add `.github/hooks/PreToolUse.json` to your repo's `.gitignore` — each developer runs `gate init --harness copilot-cli --scope project` once in their local clone.
 
 4. *(Optional)* **Register MCP server proxies** so `tools/call` responses also pass through gate:
 
@@ -225,7 +225,7 @@ Stats are collected by default and written to a local JSONL log on disk — they
 | [Claude Code](https://claude.ai/code) | ✅ | ✅ | |
 | [Cursor](https://cursor.sh) | ✅ | ✅ | Restart session after `gate init` to load the hook |
 | [OpenCode](https://opencode.ai) | ✅ | ✅ | Restart session after `gate init` to load the hook |
-| [GitHub Copilot CLI](https://github.com/features/copilot) | ✅ | ✅ | Hook is project-scoped; each developer runs `gate init` once |
+| [GitHub Copilot CLI](https://github.com/features/copilot) | ✅ | ✅ | |
 | [Codex CLI](https://github.com/openai/codex) | ✅ | ✅ | After `gate init`, restart session and trust + enable the hook in the Permissions UI |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | ✅ | ✅ | Restart session after `gate init` to load the hook |
 | [CodeBuddy](https://staging-codebuddy.tencent.com/) | ✅ | ✅ | Restart session after `gate init` to load the hook |
