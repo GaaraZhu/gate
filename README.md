@@ -138,7 +138,7 @@ git add .gate/config.yaml && git commit -m "add gate team config"
 
 # Everyone else (after gate init from the Quickstart above):
 git clone <repo>
-gate config --sync                   # scaffolds/picks up .gate/config.yaml, merges it into personal config
+gate config --sync                   # picks up .gate/config.yaml, merges it into personal config
 ```
 
 The merge is tighten-only — a project config can raise thresholds and add tools/patterns, never weaken protection — with one called-out exception for `column_allowlist`. See [docs/team.md](docs/team.md) for the full merge rules and why `gate config --sync` bakes it into personal config instead of only reading it live.

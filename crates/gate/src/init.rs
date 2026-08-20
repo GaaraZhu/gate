@@ -324,20 +324,46 @@ fn write_text_atomic(path: &Path, contents: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `gate config --sync`'s scaffolding step: ensures `.gate/config.yaml` exists
-/// under `repo_root`. A missing file is always created (blank starter); an
-/// existing file is always left alone — team config, once it exists, is edited
-/// by hand and reviewed like any other checked-in file.
-pub(crate) fn ensure_team_config_scaffold(repo_root: &Path) {
-    let path = repo_root.join(".gate").join("config.yaml");
-    if path.exists() {
-        return;
+/// `gate config --sync`'s source-discovery step: walks up from `start_dir`
+/// looking for a team config, checking each directory for `.gate/config.yaml`
+/// then a bare `config.yaml` (mirrors the walk `project_config_path` does for
+/// the live runtime merge, plus the bare-file fallback). Returns `None` if
+/// neither is found before reaching the filesystem root.
+fn find_team_config_source(start_dir: &Path) -> Option<PathBuf> {
+    let mut dir = start_dir.to_path_buf();
+    loop {
+        let nested = dir.join(".gate").join("config.yaml");
+        if nested.exists() {
+            return Some(nested);
+        }
+        let bare = dir.join("config.yaml");
+        if bare.exists() {
+            return Some(bare);
+        }
+        if !dir.pop() {
+            return None;
+        }
     }
-    write_team_config(repo_root);
 }
 
-/// `gate config --sync`'s personal-merge step: reads `.gate/config.yaml` under
-/// `repo_root` and merges it into the caller's personal config file on disk,
+/// `gate config --sync`: finds a team config above (or in) `start_dir` and
+/// merges it into personal config. No git repository required. Never creates
+/// a team config — that's `gate export`'s job; `--sync` only picks up what's
+/// already there.
+pub(crate) fn sync_team_config(start_dir: &Path) {
+    let Some(team_path) = find_team_config_source(start_dir) else {
+        println!(
+            "No team config found (.gate/config.yaml or config.yaml, searched from {} upward). \
+             Run `gate export` to create one from your personal config.",
+            start_dir.display()
+        );
+        return;
+    };
+    merge_project_into_personal(&team_path);
+}
+
+/// `gate config --sync`'s personal-merge step: reads the team config at
+/// `team_path` and merges it into the caller's personal config file on disk,
 /// using the same tighten-only rules as the in-memory runtime merge (including
 /// `column_allowlist`, per an explicit choice to accept that a project's
 /// allowlist entries become permanent and global once merged — see
@@ -349,9 +375,8 @@ pub(crate) fn ensure_team_config_scaffold(repo_root: &Path) {
 /// an accepted tradeoff for guaranteeing the merge survives regardless of the
 /// caller's shell CWD later (unlike the in-memory merge, which only applies
 /// while CWD is inside this repo).
-pub(crate) fn merge_project_into_personal(repo_root: &Path) {
-    let team_path = repo_root.join(".gate").join("config.yaml");
-    let project = match common::config::ProjectConfig::load_from_path(&team_path) {
+fn merge_project_into_personal(team_path: &Path) {
+    let project = match common::config::ProjectConfig::load_from_path(team_path) {
         Ok(p) => p,
         Err(e) => {
             eprintln!(
@@ -434,7 +459,8 @@ pub(crate) fn merge_project_into_personal(repo_root: &Path) {
         .unwrap_or_else(|e| exit_with_error(&format!("failed to write personal config: {e}")));
 
     println!(
-        "Merged .gate/config.yaml into personal config at {}",
+        "Merged {} into personal config at {}",
+        team_path.display(),
         personal_path.display()
     );
     if threshold_changed {
@@ -481,21 +507,6 @@ pub fn run_export() {
     let personal = common::config::Config::load()
         .unwrap_or_else(|e| exit_with_error(&format!("failed to load personal config: {e}")));
     write_team_config_from_personal(&repo_root, &personal);
-}
-
-/// Writes a blank starter `.gate/config.yaml` under `repo_root`, overwriting
-/// whatever is there. Callers decide whether overwriting is appropriate.
-fn write_team_config(repo_root: &Path) {
-    let path = repo_root.join(".gate").join("config.yaml");
-    let contents =
-        crate::starter::TEAM_STARTER_CONFIG.replace("{VERSION}", env!("CARGO_PKG_VERSION"));
-    write_text_atomic(&path, &contents)
-        .unwrap_or_else(|e| exit_with_error(&format!("failed to write team config: {e}")));
-
-    println!("Wrote team config at {}", path.display());
-    println!("Commit it so the team shares it:");
-    println!("  git add {}", path.display());
-    println!("  git commit -m \"add gate team config\"");
 }
 
 /// Exports `personal` into `.gate/config.yaml` under `repo_root`, overwriting
@@ -3140,19 +3151,7 @@ mod tests {
         assert!(cmds.contains(&CODEBUDDY_HOOK_COMMAND));
     }
 
-    // ── team config scaffolding (gate init) ─────────────────────────────────
-
-    #[test]
-    fn team_config_created_when_missing() {
-        let dir = tempfile::tempdir().unwrap();
-        write_team_config(dir.path());
-        let path = dir.path().join(".gate").join("config.yaml");
-        assert!(path.exists());
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("min_gate_version"));
-        assert!(contents.contains(env!("CARGO_PKG_VERSION")));
-        assert!(contents.contains("confidence_threshold"));
-    }
+    // ── team config discovery (gate config --sync) ──────────────────────────
 
     fn seed_existing_team_config(dir: &tempfile::TempDir) -> PathBuf {
         let gate_dir = dir.path().join(".gate");
@@ -3163,36 +3162,82 @@ mod tests {
     }
 
     #[test]
-    fn ensure_scaffold_leaves_existing_alone() {
+    fn find_source_prefers_nested_gate_dir_over_bare_file() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_existing_team_config(&dir);
+        std::fs::write(
+            dir.path().join("config.yaml"),
+            "min_gate_version: \"1.1.1\"\n",
+        )
+        .unwrap();
+        let found = find_team_config_source(dir.path()).unwrap();
+        assert_eq!(found, dir.path().join(".gate").join("config.yaml"));
+    }
+
+    #[test]
+    fn find_source_falls_back_to_bare_config_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "min_gate_version: \"1.1.1\"\n").unwrap();
+        assert_eq!(find_team_config_source(dir.path()), Some(path));
+    }
+
+    #[test]
+    fn find_source_walks_up_parent_directories() {
         let dir = tempfile::tempdir().unwrap();
         let path = seed_existing_team_config(&dir);
-        ensure_team_config_scaffold(dir.path());
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(contents, "min_gate_version: \"9.9.9\"\n");
+        let child = dir.path().join("nested/deeper");
+        std::fs::create_dir_all(&child).unwrap();
+        assert_eq!(find_team_config_source(&child), Some(path));
     }
 
     #[test]
-    fn ensure_scaffold_creates_when_missing() {
+    fn find_source_none_when_nothing_present() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".gate").join("config.yaml");
-        ensure_team_config_scaffold(dir.path());
-        assert!(path.exists());
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains(env!("CARGO_PKG_VERSION")));
+        assert_eq!(find_team_config_source(dir.path()), None);
     }
 
     #[test]
-    fn team_config_parses_as_valid_project_config() {
-        let dir = tempfile::tempdir().unwrap();
-        write_team_config(dir.path());
-        let path = dir.path().join(".gate").join("config.yaml");
-        let contents = std::fs::read_to_string(&path).unwrap();
-        let parsed: common::config::ProjectConfig = serde_yaml::from_str(&contents).unwrap();
-        assert_eq!(
-            parsed.min_gate_version.as_deref(),
-            Some(env!("CARGO_PKG_VERSION"))
-        );
-        assert_eq!(parsed.pii.confidence_threshold, Some(0.8));
+    fn sync_scaffold_leaves_existing_gate_config_alone() {
+        with_personal_config("", |_personal_path| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = seed_existing_team_config(&dir);
+            sync_team_config(dir.path());
+            let contents = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(contents, "min_gate_version: \"9.9.9\"\n");
+        });
+    }
+
+    #[test]
+    fn sync_creates_nothing_when_no_team_config_found() {
+        // Creating a team config is `gate export`'s job, not `--sync`'s — sync
+        // only picks up what's already there.
+        with_personal_config("", |personal_path| {
+            let dir = tempfile::tempdir().unwrap();
+            let before = std::fs::read_to_string(personal_path).unwrap();
+            sync_team_config(dir.path());
+            assert!(!dir.path().join(".gate").exists());
+            assert!(!dir.path().join("config.yaml").exists());
+            let after = std::fs::read_to_string(personal_path).unwrap();
+            assert_eq!(before, after);
+        });
+    }
+
+    #[test]
+    fn sync_uses_bare_config_yaml_without_creating_gate_dir() {
+        with_personal_config("", |personal_path| {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("config.yaml"),
+                "tools:\n  tkpsql:\n    sql_arg: \"--sql\"\n",
+            )
+            .unwrap();
+            sync_team_config(dir.path());
+            assert!(!dir.path().join(".gate").exists());
+            let contents = std::fs::read_to_string(personal_path).unwrap();
+            let parsed: common::config::Config = serde_yaml::from_str(&contents).unwrap();
+            assert!(parsed.tools.contains_key("tkpsql"));
+        });
     }
 
     // ── gate export ────────────────────────────────────────────────────────
@@ -3285,7 +3330,7 @@ mod tests {
                 &dir,
                 "tools:\n  tkpsql:\n    sql_arg: \"--sql\"\npii:\n  confidence_threshold: 0.9\n",
             );
-            merge_project_into_personal(dir.path());
+            merge_project_into_personal(&dir.path().join(".gate").join("config.yaml"));
             let contents = std::fs::read_to_string(personal_path).unwrap();
             let parsed: common::config::Config = serde_yaml::from_str(&contents).unwrap();
             assert!(parsed.tools.contains_key("tkpsql"));
@@ -3298,7 +3343,7 @@ mod tests {
         with_personal_config("pii:\n  confidence_threshold: 0.9\n", |personal_path| {
             let dir = tempfile::tempdir().unwrap();
             write_project_config(&dir, "pii:\n  confidence_threshold: 0.3\n");
-            merge_project_into_personal(dir.path());
+            merge_project_into_personal(&dir.path().join(".gate").join("config.yaml"));
             // Nothing changed (0.3 does not raise 0.9), so the file must be
             // untouched, not rewritten with a lowered value.
             let contents = std::fs::read_to_string(personal_path).unwrap();
@@ -3311,7 +3356,7 @@ mod tests {
         with_personal_config("tools:\n  mysql:\n    sql_arg: \"-e\"\n", |personal_path| {
             let dir = tempfile::tempdir().unwrap();
             write_project_config(&dir, "tools:\n  tkpsql:\n    sql_arg: \"--sql\"\n");
-            merge_project_into_personal(dir.path());
+            merge_project_into_personal(&dir.path().join(".gate").join("config.yaml"));
             let contents = std::fs::read_to_string(personal_path).unwrap();
             let parsed: common::config::Config = serde_yaml::from_str(&contents).unwrap();
             assert!(
@@ -3334,7 +3379,7 @@ mod tests {
         with_personal_config("", |personal_path| {
             let dir = tempfile::tempdir().unwrap();
             write_project_config(&dir, "pii:\n  column_allowlist:\n    - user_id\n");
-            merge_project_into_personal(dir.path());
+            merge_project_into_personal(&dir.path().join(".gate").join("config.yaml"));
             let contents = std::fs::read_to_string(personal_path).unwrap();
             let parsed: common::config::Config = serde_yaml::from_str(&contents).unwrap();
             assert_eq!(parsed.pii.column_allowlist, vec!["user_id"]);
@@ -3352,7 +3397,7 @@ mod tests {
                     "tools:\n  tkpsql:\n    sql_arg: \"--sql\"\npii:\n  confidence_threshold: 0.5\n",
                 );
                 let before = std::fs::read_to_string(personal_path).unwrap();
-                merge_project_into_personal(dir.path());
+                merge_project_into_personal(&dir.path().join(".gate").join("config.yaml"));
                 let after = std::fs::read_to_string(personal_path).unwrap();
                 assert_eq!(
                     before, after,
@@ -3370,7 +3415,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 write_project_config(&dir, "pii: {bad: yaml: :: :");
                 let before = std::fs::read_to_string(personal_path).unwrap();
-                merge_project_into_personal(dir.path());
+                merge_project_into_personal(&dir.path().join(".gate").join("config.yaml"));
                 let after = std::fs::read_to_string(personal_path).unwrap();
                 assert_eq!(
                     before, after,

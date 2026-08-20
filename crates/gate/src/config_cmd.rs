@@ -33,18 +33,15 @@ pub fn run(show_path: bool, print_config: bool, init_only: bool, sync: bool) {
     run_with_path(show_path, print_config, init_only, &path);
 }
 
-/// `gate config --sync`: ensures `.gate/config.yaml` exists and merges it into
-/// personal config. Non-interactive and safe inside an agent harness — same
-/// safety profile as `--init-only`.
+/// `gate config --sync`: finds a team config — `.gate/config.yaml` or a bare
+/// `config.yaml`, walking up from the current directory — and merges it into
+/// personal config, scaffolding a blank starter if neither is found. No git
+/// repository required. Non-interactive and safe inside an agent harness —
+/// same safety profile as `--init-only`.
 fn run_sync() {
-    let repo_root = crate::init::find_git_root().unwrap_or_else(|| {
-        exit_with_error(
-            "gate config --sync must be run inside a git repository \
-             (no .git found in this directory or any parent).",
-        )
-    });
-    crate::init::ensure_team_config_scaffold(&repo_root);
-    crate::init::merge_project_into_personal(&repo_root);
+    let cwd = std::env::current_dir()
+        .unwrap_or_else(|e| exit_with_error(&format!("failed to resolve current directory: {e}")));
+    crate::init::sync_team_config(&cwd);
 }
 
 fn run_with_path(show_path: bool, print_config: bool, init_only: bool, path: &Path) {

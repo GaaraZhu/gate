@@ -57,15 +57,15 @@ You can hand-edit `.gate/config.yaml` directly instead of (or after) exporting �
 
 ```bash
 git clone <repo>
-gate config --sync   # scaffolds/picks up .gate/config.yaml, merges it into personal config
+gate config --sync   # picks up .gate/config.yaml, merges it into personal config
 ```
 
 (You'll also run `gate init` to register the harness hook — see the main README — but that's a separate, unrelated step; `gate init` never touches `.gate/config.yaml`.)
 
 `gate config --sync` does two things:
 
-1. **Ensures `.gate/config.yaml` exists.** If the repo doesn't have one yet, it writes a blank, commented starter. If one already exists, it's left alone — team config, once committed, is edited by hand and reviewed like any other file in the repo.
-2. **Merges it into your personal config.** The fields above are merged into `~/.config/gate/config.yaml` on disk, using the same rules as the table above (a project pattern is added, a higher project threshold wins, etc.). This is additive and idempotent — running `gate config --sync` again with no changes to `.gate/config.yaml` does nothing and prints nothing.
+1. **Finds a team config.** It walks up from the current directory looking for `.gate/config.yaml`, then a bare `config.yaml`, at each level — no git repository required. `--sync` never creates a team config — that's what `gate export` is for (see above). If nothing is found anywhere up the tree, it prints a note and exits without touching anything.
+2. **Merges it into your personal config.** The fields above are merged into `~/.config/gate/config.yaml` on disk, using the same rules as the table above (a project pattern is added, a higher project threshold wins, etc.). This is additive and idempotent — running `gate config --sync` again with no changes to the team config does nothing and prints nothing.
 
 `--sync` is non-interactive (unlike plain `gate config`, which opens an editor) and safe to run inside an agent harness — same safety profile as `gate config --init-only`.
 
@@ -73,7 +73,7 @@ Re-run `gate config --sync` any time `.gate/config.yaml` changes (after a `git p
 
 ### Why merge into personal config instead of just reading the project file live?
 
-`gate` *also* merges `.gate/config.yaml` in-memory on every invocation, purely by walking up from the current directory (the same way git finds `.git`) — so as long as your shell is inside the project when a command runs, you get the merged rules automatically, with no `gate config --sync` needed.
+`gate` *also* merges `.gate/config.yaml` in-memory on every invocation, purely by walking up from the current directory (the same way git finds `.git`) — so as long as your shell is inside the project when a command runs, you get the merged rules automatically, with no `gate config --sync` needed. (This live walk only recognizes `.gate/config.yaml`, not a bare `config.yaml` — the bare-file fallback is specific to `--sync`.)
 
 The persistent merge exists for the gap that leaves: `gate hook`/`gate run` inherit whatever directory your shell is actually in at that moment. If an agent session `cd`s elsewhere mid-session — into a scratch directory, a different checkout, wherever — and then runs a query, the live directory walk won't find `.gate/config.yaml`, and protection silently falls back to whatever's in personal config alone. Baking the safe fields into personal config once (via `gate config --sync`) means they apply everywhere afterward, independent of the shell's current directory.
 

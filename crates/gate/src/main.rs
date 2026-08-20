@@ -116,7 +116,7 @@ enum Commands {
     )]
     Export,
     #[command(
-        about = "Manage the gate config file.\nWith --sync, ensures .gate/config.yaml exists (team-shared project config, blank starter if missing) and merges it into your personal config — non-interactive, safe inside an agent harness. Re-run after a git pull to pick up team config changes."
+        about = "Manage the gate config file.\nWith --sync, finds a team config — .gate/config.yaml or a bare config.yaml, walking up from the current directory; no git repo required — and merges it into your personal config. Does nothing if none is found (use `gate export` to create one). Non-interactive, safe inside an agent harness. Re-run after a git pull to pick up team config changes."
     )]
     Config {
         /// Print the resolved config file path and exit
