@@ -50,6 +50,11 @@ enum Shape {
         col_field: &'static str,
         row_field: &'static str,
     },
+    /// Databricks SQL Statement Execution API response:
+    /// `{"manifest":{"schema":{"columns":[{"name":...},...]}},"result":{"data_array":[[...]]}}`.
+    /// Column names live under `manifest.schema.columns[].name`, one level deeper than
+    /// the generic `Columnar` shape, so it needs its own detector and redaction path.
+    DatabricksApi,
     Object,
     Array,
     Other,
@@ -144,6 +149,16 @@ pub fn redact_with_stats(
             &effective_allowlist,
             &mut summary,
         )
+    } else if shape == Shape::DatabricksApi {
+        redact_databricks_api(
+            payload,
+            plan,
+            config,
+            &patterns,
+            &effective_names,
+            &effective_allowlist,
+            &mut summary,
+        )
     } else {
         walk(
             payload,
@@ -190,12 +205,34 @@ fn find_columnar_keys(map: &Map<String, Value>) -> Option<(&'static str, &'stati
     Some((col_field, row_field))
 }
 
+/// True when `map` matches the Databricks Statement Execution API response shape:
+/// `manifest.schema.columns` (array of `{"name": ...}` objects) plus `result.data_array`
+/// (array of arrays).
+fn is_databricks_api_shape(map: &Map<String, Value>) -> bool {
+    let has_columns = map
+        .get("manifest")
+        .and_then(|m| m.get("schema"))
+        .and_then(|s| s.get("columns"))
+        .and_then(Value::as_array)
+        .map(|cols| !cols.is_empty() && cols.iter().all(|c| c.get("name").is_some()))
+        .unwrap_or(false);
+    let has_data_array = map
+        .get("result")
+        .and_then(|r| r.get("data_array"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().all(|v| v.is_array()))
+        .unwrap_or(false);
+    has_columns && has_data_array
+}
+
 fn detect_shape(val: &Value) -> Shape {
     match val {
         Value::Object(map) => match map.get("error") {
             Some(Value::String(s)) if !s.is_empty() => Shape::Error,
             _ => {
-                if let Some((col_field, row_field)) = find_columnar_keys(map) {
+                if is_databricks_api_shape(map) {
+                    Shape::DatabricksApi
+                } else if let Some((col_field, row_field)) = find_columnar_keys(map) {
                     Shape::Columnar {
                         col_field,
                         row_field,
@@ -223,7 +260,7 @@ fn apply_summary(
     }
     let sv = summary.to_value();
     match shape {
-        Shape::Object | Shape::Columnar { .. } => {
+        Shape::Object | Shape::Columnar { .. } | Shape::DatabricksApi => {
             if let Value::Object(mut map) = payload {
                 map.insert("_gate_summary".to_string(), sv);
                 Value::Object(map)
@@ -300,77 +337,16 @@ fn redact_columnar(
         .unwrap_or_default();
 
     if let Some(Value::Array(rows)) = map.remove(row_field) {
-        // First pass: probe every string cell. If any value in a column triggers a
-        // value-level PII match, the whole column is promoted — all rows will be
-        // force-redacted regardless of whether their individual values match.
-        let mut promoted: HashMap<usize, String> = HashMap::new();
-        for row in &rows {
-            if let Value::Array(cells) = row {
-                for (i, cell) in cells.iter().enumerate() {
-                    if promoted.contains_key(&i) {
-                        continue;
-                    }
-                    let col_lower = col_names.get(i).map(|n| n.to_lowercase());
-                    if col_lower
-                        .as_deref()
-                        .map(|k| effective_allowlist.iter().any(|a| a == k))
-                        .unwrap_or(false)
-                    {
-                        continue;
-                    }
-                    if let Value::String(s) = cell {
-                        if let Some(pii_type) = probe_value_pii(s, patterns) {
-                            promoted.insert(i, pii_type);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Second pass: redact. Promoted columns are force-redacted for every row;
-        // non-promoted columns go through the normal per-value walk.
-        let new_rows: Vec<Value> = rows
-            .into_iter()
-            .map(|row| {
-                if let Value::Array(cells) = row {
-                    Value::Array(
-                        cells
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, cell)| {
-                                let col_name = col_names.get(i).map(String::as_str);
-                                if let Some(pii_type) = promoted.get(&i) {
-                                    if let Value::String(s) = &cell {
-                                        return do_redact(pii_type, s, config, summary);
-                                    }
-                                }
-                                walk(
-                                    cell,
-                                    col_name,
-                                    plan,
-                                    config,
-                                    patterns,
-                                    effective_names,
-                                    effective_allowlist,
-                                    summary,
-                                )
-                            })
-                            .collect(),
-                    )
-                } else {
-                    walk(
-                        row,
-                        None,
-                        plan,
-                        config,
-                        patterns,
-                        effective_names,
-                        effective_allowlist,
-                        summary,
-                    )
-                }
-            })
-            .collect();
+        let new_rows = redact_rows(
+            &col_names,
+            rows,
+            plan,
+            config,
+            patterns,
+            effective_names,
+            effective_allowlist,
+            summary,
+        );
         map.insert(row_field.to_string(), Value::Array(new_rows));
     }
 
@@ -393,6 +369,177 @@ fn redact_columnar(
         .collect();
 
     Value::Object(new_map)
+}
+
+/// Redact the Databricks Statement Execution API response shape:
+/// `{"manifest":{"schema":{"columns":[{"name":...},...]}},"result":{"data_array":[[...]]}}`.
+/// Column names live under `manifest.schema.columns[].name` (one level deeper than the
+/// generic `Columnar` shape) and drive positional redaction of `result.data_array` the
+/// same way `redact_columnar` does for flat `{columns, rows}` payloads.
+#[allow(clippy::too_many_arguments)]
+fn redact_databricks_api(
+    payload: Value,
+    plan: &RedactPlan,
+    config: &PiiConfig,
+    patterns: &[CompiledPattern],
+    effective_names: &[String],
+    effective_allowlist: &[String],
+    summary: &mut RedactSummary,
+) -> Value {
+    let Value::Object(mut map) = payload else {
+        unreachable!("databricks shape is always an object");
+    };
+
+    let col_names: Vec<String> = map
+        .get("manifest")
+        .and_then(|m| m.get("schema"))
+        .and_then(|s| s.get("columns"))
+        .and_then(Value::as_array)
+        .map(|cols| {
+            cols.iter()
+                .map(|c| {
+                    c.get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if let Some(Value::Object(mut result_map)) = map.remove("result") {
+        if let Some(Value::Array(rows)) = result_map.remove("data_array") {
+            let new_rows = redact_rows(
+                &col_names,
+                rows,
+                plan,
+                config,
+                patterns,
+                effective_names,
+                effective_allowlist,
+                summary,
+            );
+            result_map.insert("data_array".to_string(), Value::Array(new_rows));
+        }
+        let new_result: Map<String, Value> = result_map
+            .into_iter()
+            .map(|(k, v)| {
+                let new_v = walk(
+                    v,
+                    Some(k.as_str()),
+                    plan,
+                    config,
+                    patterns,
+                    effective_names,
+                    effective_allowlist,
+                    summary,
+                );
+                (k, new_v)
+            })
+            .collect();
+        map.insert("result".to_string(), Value::Object(new_result));
+    }
+
+    let new_map: Map<String, Value> = map
+        .into_iter()
+        .map(|(k, v)| {
+            let new_v = walk(
+                v,
+                Some(k.as_str()),
+                plan,
+                config,
+                patterns,
+                effective_names,
+                effective_allowlist,
+                summary,
+            );
+            (k, new_v)
+        })
+        .collect();
+
+    Value::Object(new_map)
+}
+
+/// Two-pass positional redaction shared by [`redact_columnar`] and [`redact_databricks_api`].
+/// First pass promotes any column where a cell value triggers a value-level PII match
+/// (Luhn/regex), forcing redaction of the whole column. Second pass redacts promoted
+/// columns outright and runs the normal per-value walk (column-name based) on the rest.
+#[allow(clippy::too_many_arguments)]
+fn redact_rows(
+    col_names: &[String],
+    rows: Vec<Value>,
+    plan: &RedactPlan,
+    config: &PiiConfig,
+    patterns: &[CompiledPattern],
+    effective_names: &[String],
+    effective_allowlist: &[String],
+    summary: &mut RedactSummary,
+) -> Vec<Value> {
+    let mut promoted: HashMap<usize, String> = HashMap::new();
+    for row in &rows {
+        if let Value::Array(cells) = row {
+            for (i, cell) in cells.iter().enumerate() {
+                if promoted.contains_key(&i) {
+                    continue;
+                }
+                let col_lower = col_names.get(i).map(|n| n.to_lowercase());
+                if col_lower
+                    .as_deref()
+                    .map(|k| effective_allowlist.iter().any(|a| a == k))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                if let Value::String(s) = cell {
+                    if let Some(pii_type) = probe_value_pii(s, patterns) {
+                        promoted.insert(i, pii_type);
+                    }
+                }
+            }
+        }
+    }
+
+    rows.into_iter()
+        .map(|row| {
+            if let Value::Array(cells) = row {
+                Value::Array(
+                    cells
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, cell)| {
+                            let col_name = col_names.get(i).map(String::as_str);
+                            if let Some(pii_type) = promoted.get(&i) {
+                                if let Value::String(s) = &cell {
+                                    return do_redact(pii_type, s, config, summary);
+                                }
+                            }
+                            walk(
+                                cell,
+                                col_name,
+                                plan,
+                                config,
+                                patterns,
+                                effective_names,
+                                effective_allowlist,
+                                summary,
+                            )
+                        })
+                        .collect(),
+                )
+            } else {
+                walk(
+                    row,
+                    None,
+                    plan,
+                    config,
+                    patterns,
+                    effective_names,
+                    effective_allowlist,
+                    summary,
+                )
+            }
+        })
+        .collect()
 }
 
 // ── Tree walk ─────────────────────────────────────────────────────────────────

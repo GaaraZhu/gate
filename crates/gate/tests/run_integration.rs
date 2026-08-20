@@ -548,11 +548,14 @@ fn sql_flag_equals_form_parsed() {
 #[test]
 fn databricks_json_sql_path_extraction() {
     let dir = tmp();
-    // Databricks API response with manifest schema and data
+    // Databricks API response with manifest schema and data.
+    // "row_num" (not "customer_id") is used as the non-PII column: classify_column
+    // legitimately flags "customer_id" as a PII-adjacent identifier (see patterns.rs),
+    // so it isn't a safe "should stay plain" column for this test.
     let tool = write_script(
         &dir,
         "fake-databricks",
-        r#"echo '{"manifest":{"schema":{"columns":[{"name":"customer_id","position":0,"type_name":"INT"},{"name":"email","position":1,"type_name":"STRING"}]}},"result":{"data_array":[["1001","alice@example.com"]]},"status":{"state":"SUCCEEDED"}}'"#,
+        r#"echo '{"manifest":{"schema":{"columns":[{"name":"row_num","position":0,"type_name":"INT"},{"name":"email","position":1,"type_name":"STRING"}]}},"result":{"data_array":[["1","alice@example.com"]]},"status":{"state":"SUCCEEDED"}}'"#,
     );
     let config = write_config(
         &dir,
@@ -560,19 +563,55 @@ fn databricks_json_sql_path_extraction() {
     );
 
     let json_payload =
-        r#"{"statement":"SELECT customer_id, email FROM users","warehouse_id":"abc123"}"#;
+        r#"{"statement":"SELECT row_num, email FROM users","warehouse_id":"abc123"}"#;
     let out = redact_run(&config, &tool, &["--json", json_payload]);
 
     assert_eq!(exit_code(&out), 0);
     let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
     // Gate 2 redacts the email in the data_array
     assert_eq!(
-        v["result"]["data_array"][0][0], "1001",
-        "customer_id should not be redacted"
+        v["result"]["data_array"][0][0], "1",
+        "row_num should not be redacted"
     );
     assert_eq!(
         v["result"]["data_array"][0][1], "[PII:email]",
         "email should be redacted"
+    );
+}
+
+/// Regression: a denylisted column (e.g. `account_number`) with a plain, non-regex-matching
+/// value (no Luhn/email/etc. pattern) must still be redacted by column name in the Databricks
+/// statement-execution shape, not just values that happen to match a value-level pattern.
+#[test]
+fn databricks_api_response_redacts_denylisted_column_by_name() {
+    let dir = tmp();
+    let tool = write_script(
+        &dir,
+        "fake-databricks",
+        r#"echo '{"manifest":{"schema":{"columns":[{"name":"id","position":0,"type_name":"INT"},{"name":"account_number","position":1,"type_name":"STRING"}]}},"result":{"data_array":[["1","ACC-99887766"]]},"status":{"state":"SUCCEEDED"}}'"#,
+    );
+    let config = write_config(
+        &dir,
+        "tools:\n  fake-databricks:\n    sql_arg: \"--json\"\n    json_sql_path: \"statement\"\n\
+         pii:\n  column_denylist:\n    - account_number\n",
+    );
+
+    let json_payload = r#"{"statement":"SELECT * FROM bank_account","warehouse_id":"abc123"}"#;
+    let out = redact_run(&config, &tool, &["--json", json_payload]);
+
+    assert_eq!(exit_code(&out), 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(
+        v["result"]["data_array"][0][0], "1",
+        "id should not be redacted"
+    );
+    assert!(
+        v["result"]["data_array"][0][1]
+            .as_str()
+            .unwrap()
+            .starts_with("[PII:"),
+        "account_number should be redacted by column name, got {:?}",
+        v["result"]["data_array"][0][1]
     );
 }
 
